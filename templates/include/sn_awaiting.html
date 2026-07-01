@@ -1,0 +1,46 @@
+
+<table style="width:100%">
+    <thead>
+        <tr>
+            <td>Public Key</td>
+            <td>Contributors</td>
+            <td>Operator Fee (%)</td>
+            <td>Contributed</td>
+            <td>Open For Contribution</td>
+            <td>Min. Contribution</td>
+            <td>Expiry Date UTC (Estimated)</td>
+        </tr>
+    </thead>
+
+    <tbody>
+        {%set max_contributors = 10 if 'hard_fork' in info and info.hard_fork >= 19 else 4 %}
+        {%for sn in (awaiting_sns | sort(attribute='portions_for_operator,contribution_open,contribution_required,service_node_pubkey'))[:limit_awaiting]%}
+            <tr>
+                {%include 'include/sn_kcf.html'%}
+                <td>{{sn.total_contributed | jude(tag=false, fixed=true)}}</td>
+                {%if sn.total_reserved >= sn.staking_requirement%}
+                    <td title="All remaining contribution room is reserved for specific contributors">
+                        ⛔ {{sn.contribution_open | jude(tag=false, fixed=true)}}
+                    </td>
+                {%else%}
+                    <td>{{sn.contribution_open | jude(tag=false, fixed=true)}}</td>
+                {%endif%}
+                <td>{{ (0 if sn.num_contributions >= max_contributors else (sn.contribution_open / (max_contributors - sn.num_contributions)) | round(method='ceil')) | jude(tag=false, fixed=true) }}</td>
+                <td>
+                    {%if sn.requested_unlock_height%}
+                        <span title="Service Node unlock in progress (unlocks at block {{sn.requested_unlock_height}})">🔓</span>
+                        {{((sn.requested_unlock_height - info.height) * 120 + server.datetime.timestamp()) | from_timestamp | format_datetime('short')}}
+                        ({{((sn.requested_unlock_height - info.height) * 120) | reltime}})
+                    {%else%}
+                        Staking Infinitely
+                    {%endif%}
+                </td>
+            </tr>
+        {%endfor%}
+        {%if limit_awaiting and (awaiting_sns | length) > limit_awaiting%}
+            <tr>
+                <td class="sn-more" colspan="7"><a href="/service_nodes#service-nodes-awaiting">+ {{(awaiting_sns | length) - limit_awaiting}} more ↪</a></td>
+            </tr>
+        {%endif%}
+    </tbody>
+</table>

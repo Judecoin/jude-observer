@@ -1,0 +1,24 @@
+{% extends "_basic.html" %}
+
+{% block content %}
+    <div class="Wrapper">
+
+        <div class="TitleDivider"></div>
+
+        <h4 class="tx-type-legend info_list nowrap-spans" style="margin-top: 0">
+            <span><label>TX Type Legend:</label> <img class="image" src="../static/registration.png" alt="">  Service Node Registration</span>
+            <span><img class="image" src="../static/contribution.png" alt=""> Contribution</span>
+            <span><img class="image" src="../static/recommission.png" alt=""> Recommission</span>
+            <span><img class="image" src="../static/decommission.png" alt="">  Decommission</span>
+            <span><img class="image" src="../static/deregistration.png" alt="">  Deregistration</span>
+            <span><img class="image" src="../static/ip_change_penalty.png" alt="">  IP Change Penalty</span>
+            <span><img class="image" src="../static/stake_unlock.png" alt="">  Stake Unlock</span>
+            <!-- <span><img class="image" src="../static/system_purchase.png" alt="">  Jude Name System Purchase</span>
+            <span><img class="image" src="../static/ONS_update.png" alt="">  ONS Update</span> -->
+        </h4>
+    </div>
+
+    {% set mempool_limit = none %}
+    {% include 'include/mempool.html' %}
+
+{% endblock %}

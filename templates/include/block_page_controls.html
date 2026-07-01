@@ -1,4 +1,4 @@
-<div id="pages" class="center" style="text-align: center;">
+<div class="pages" class="center" style="text-align: center;">
   {% set top_page = (info.height - 1) // per_page %}
   {% if page > 0 %}
     <a href="/page/{{page - 1}}{{custom_per_page}}">
@@ -8,7 +8,9 @@
     <div class="PageButton disabled">Prev</div>
   {% endif %}
   <div class="PageButton">
-    Current Page: <a title="Return to current blocks" href="/{%if custom_per_page%}page/0{{custom_per_page}}{%endif%}">{{page}}</a>/<a href="/page/{{top_page}}{{custom_per_page}}">{{top_page}}</a>
+    Current Page: 
+    <a title="Return to current blocks" class="pageNo" href="/{%if custom_per_page%}page/0{{custom_per_page}}{%endif%}">{{page}}</a>/
+    <a class="pageNo" href="/page/{{top_page}}{{custom_per_page}}">{{top_page}}</a>
   </div>
 
   {%if page < top_page%}
