@@ -1,33 +1,43 @@
-{% macro display(tx) -%}
+{%- macro display(tx, text=false) -%}
     {% if tx.info.version >= 4 -%}
         {% if tx.info.type == 1 and 'sn_state_change' in tx.extra -%}
             {% if tx.extra.sn_state_change.type == 'decom' -%}
-                <span class="icon" title="Service Node decommission">👎</span>
+                <span class="icon" title="Service Node decommission">👎{%if text%} decommission{%endif%}</span>
             {% elif tx.extra.sn_state_change.type == 'recom' -%}
-                <span class="icon" title="Service Node recommission">👍</span>
+                <span class="icon" title="Service Node recommission">👍{%if text%} recommission{%endif%}</span>
             {% elif tx.extra.sn_state_change.type == 'dereg' -%}
-                <span class="icon" title="Service Node deregistration">🚫</span>
+                <span class="icon" title="Service Node deregistration">🚫{%if text%} deregistration{%endif%}</span>
             {% elif tx.extra.sn_state_change.type == 'ip' -%}
-                <span class="icon" title="Service Node IP change penalty">📋</span>
+                <span class="icon" title="Service Node IP change penalty">📋{%if text%} ip change{%endif%}</span>
             {% else -%}
-                <span class="icon" title="Unknown state change transaction">❓</span><!-- Either a bug or a malformed transaction -->
+                <span class="icon" title="Unknown state change transaction">❓{%if text%} unknown state change{%endif%}</span><!-- Either a bug or a malformed transaction -->
             {% endif -%}
         {% elif tx.info.type == 2 -%}
-            <span class="icon" title="Service Node stake unlock — {{tx.extra.sn_pubkey}}">🔓</span>
-        {% elif tx.info.type == 4 and 'lns' in tx.extra -%}
-            {% if 'buy' in tx.extra.lns -%}
-                <span class="icon" title="Loki Name Service Buying">🎫</span>
-            {% elif 'update' in tx.extra.lns -%}
-                <span class="icon" title="Loki Name Service Updating">💾</span>
+            <span class="icon" title="Service Node stake unlock — {{tx.extra.sn_pubkey}}">🔓{%if text%} unlock{%endif%}</span>
+        {% elif tx.info.type == 4 and 'ons' in tx.extra -%}
+            {% if 'buy' in tx.extra.ons -%}
+                <span class="icon" title="Jude Name Service Buying">🎫{%if text%} LNS purchase{%endif%}</span>
+            {% elif 'update' in tx.extra.ons -%}
+                <span class="icon" title="Jude Name Service Updating">💾{%if text%} LNS update{%endif%}</span>
             {% endif -%}
         {% elif 'sn_registration' in tx.extra -%}
-            <span class="icon" title="Service Node registration ({{tx.extra.sn_registration.fee / 10000}}% fee)
+            <span class="icon" title="Service Node registration
+                         {%-if tx.extra.sn_registration.fee == 1000000%} (solo)
+                         {%-else%} ({{tx.extra.sn_registration.fee / 10000}}% fee)
+                         {%-endif%}
 {{tx.extra.sn_pubkey}}
 {%-for c in tx.extra.sn_registration.contributors%}
 {{c.wallet | truncate(15)}} ({{c.portion / 10000}}% stake)
-{%-endfor%}">🏁</span>
-        {% elif 'sn_contributor' in tx.extra -%}
-            <span class="icon" title="Service Node contribution – {{tx.extra.sn_pubkey}} / {{tx.extra.sn_contributor}}">⚑</span>
-        {% endif -%}
-    {% endif -%}
-{% endmacro %}
+{%-endfor%}">🏁{%if text%} registration{%endif%}</span>
+        {%- elif 'sn_contributor' in tx.extra -%}
+            <span class="icon" title="Service Node contribution – {{tx.extra.sn_pubkey}} / {{tx.extra.sn_contributor}}">⚑
+            {%-if text%} contribution{%endif%}</span>
+        {%- elif tx.coinbase%}
+            <span class="icon" title="Block reward">🎁{%if text%} block reward{%endif%}</span>
+        {%- elif text -%}
+            transfer
+        {%- endif -%}
+    {%- elif standard -%}
+        {%if tx.coinbase%}block reward{%else%}transfer{%endif%}
+    {%- endif -%}
+{% endmacro -%}
