@@ -7,7 +7,7 @@
 
     <h4 class="Subtitle">{{mempool.transactions|length}} transactions,
         {{mempool.transactions|sum(attribute='blob_size') | si}}B</h4>
-    <div class="TitleDivider"></div>
+    <div class="TitleUnderliner"></div>
 
     <table style="width:100%">
         <thead>
@@ -21,11 +21,20 @@
             </tr>
         </thead>
         <tbody>
+        {% import 'include/tx_type_symbol.html' as symbol %}
+        {% import 'include/tx_fee.html' as fee %}
         {% for tx in mempool.transactions[:mempool_limit] %}
             <tr>
                 <td title="{{tx.receive_time | from_timestamp | format_datetime}}">{{tx.receive_time | from_timestamp | ago}}</td>
-                <td class=TXType>{{tx_type_symbol}}</td>
+                <td>{{symbol.display(tx)}}</td>
                 <td><a href="/tx/{{tx.id_hash}}">{{tx.id_hash}}</a></td>
+                <td>
+                    {%if 'rct_signatures' in tx.info%}
+                        {{fee.display(tx)}} / {{(tx.info.rct_signatures.txnFee * 1000 / tx.blob_size) | jude(tag=false, decimals=4)}}
+                    {%else%}
+                        N/A
+                    {%endif%}
+                </td>
                 <td>{{tx.info.vin | length}}/{{tx.info.vout | length}}</td>
                 <td>{{tx.blob_size | si}}B</td>
             </tr>
@@ -35,7 +44,7 @@
 
     {% if mempool.transactions|length > mempool_limit %}
         <div class="center" style="text-align: center; margin-bottom: 10px">
-            <a href="/txpool">Only {{mempool_limit}}/{{len(mempool.transactions)}} transactions shown. Click here to see all of them</a>
+            <a href="/txpool">Only {{mempool_limit}}/{{mempool.transactions | length}} transactions shown. Click here to see all of them</a>
         </div>
     {% endif %}
 
