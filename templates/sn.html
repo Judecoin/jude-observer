@@ -1,0 +1,268 @@
+{% extends "_basic.html" %}
+
+{% block content %}
+
+{%-set portions_base = 2**64 - 4 %}
+{%-set solo_node = sn.contributors|length == 1 and sn.funded %}
+{%-set decommed = sn.funded and not sn.active %}
+
+<div class="sn-details Wrapper">
+  <div class="sn-details-main">
+    <div class="details">
+      <h2>Service Node Details</h2>
+      <div class="TitleUnderliner"></div>
+      <h4 style="margin:5px"><label>Service Node Public Key:</label> {{sn.service_node_pubkey}}</h4>
+      {%if sn.pubkey_ed25519 %}
+        {%if sn.pubkey_ed25519 != sn.service_node_pubkey%}
+          <h4 style="margin:5px"><label>Service Node Auxiliary Pubkey:</label> {{sn.pubkey_ed25519}}</h4>
+        {%endif%}
+        <h4 style="margin:5px"><label>Lokinet Address:</label> {{sn.pubkey_ed25519 | base32z}}.snode</h4>
+      {%endif%}
+      <h4 style="margin:5px"><label>Operator Address:</label> {{sn.operator_address}}</h4>
+    </div>
+    <img class="qr" src="/qr/{{sn.service_node_pubkey}}" title="{{sn.service_node_pubkey}}">
+  </div>
+
+  <h2>Metadata</h2>
+  <div class="TitleUnderliner"></div>
+  <h4 class="info_list nowrap-spans">
+
+    <span><label>Registration height:</label> <a href="/block/{{sn.registration_height}}">{{sn.registration_height}}</a>
+      {%if sn.registration_hf_version < hf.version%}
+        (hardfork v{{sn.registration_hf_version}})
+      {%endif%}
+    </span>
+
+    <span title="TX index: {{sn.last_reward_transaction_index}}">
+      {%if sn.funded%}
+        {%if sn.active%}
+          <label>Active since block:</label>
+        {%else%}{# decommissioned #}
+          <label>Decommissioned since block:</label>
+        {%endif%}
+      {%else%}
+        <label>Last contribution block:</label>
+      {%endif%}
+      <a href="/block/{{sn.state_height}}">{{sn.state_height}}</a>
+    </span>
+
+    <span><label>Staking requirement:</label> {{sn.staking_requirement | jude}}</span>
+
+    {%if not solo_node%}
+      <span><label>Operator fee:</label> {{(sn.portions_for_operator / portions_base * 100) | round(3) | chop0}}%</span>
+    {%endif%}
+
+    <span><label>Total contributed:</label>
+      {%if sn.total_contributed >= sn.staking_requirement%}100%
+      {%else%} 
+      {{sn.total_contributed | jude}} ({{(sn.total_contributed / sn.staking_requirement * 100) | round(2) | chop0}}%)
+      {%endif%}
+    </span>
+
+    {%if sn.total_reserved != sn.total_contributed%}
+      <span><label>Total reserved:</label> {{sn.total_reserved | jude}}</span>
+    {%endif%}
+
+    <span>
+    <label>{%if decommed %}Remaining{%else%}Allowed{%endif%} downtime:</label>
+    {%if sn.earned_downtime_blocks > 0%}
+      {{ (sn.earned_downtime_blocks * 120) | reltime(in_ago=false) }} ({{sn.earned_downtime_blocks}} blocks)
+      {%if not decommed and sn.earned_downtime_blocks < 60%}
+        <span class="note">(Note: ≥ 60 blocks required)</span>
+      {%endif%}
+    {%else%}
+      None
+    {%endif%}
+    </span>
+
+    <span>
+      <label>Version:</label>
+      {%if sn.last_uptime_proof == 0%}
+        <span>Not received</span>
+      {%else%}
+        <span>{{sn.service_node_version[0]}}.{{sn.service_node_version[1]}}.{{sn.service_node_version[2]}}</span>
+      {%endif%}
+    </span>
+
+    <span>
+      <label class="omg{%if server.timestamp - sn.last_uptime_proof > 3900%} warning{%endif%}">Last uptime proof:</label>
+      {%if sn.last_uptime_proof == 0%}
+        <span>Not received</span>
+      {%else%}
+        <span title="{{sn.last_uptime_proof|from_timestamp|format_datetime}}">{{sn.last_uptime_proof | from_timestamp | ago}} ago</span>
+      {%endif%}
+    </span>
+
+    {%if info.service_node%}{# SN tests are only conducted by SNs #}
+      <span>
+        <label{%if sn.storage_server_last_unreachable > sn.storage_server_last_reachable%} class="omg warning"{%endif%}>Storage server:</label>
+        {%if sn.storage_server_last_reachable == 0 and sn.storage_server_last_unreachable == 0%}
+          Not yet tested
+        {%elif sn.storage_server_last_reachable >= sn.storage_server_last_unreachable%}
+          <span title="Last unreachable: {%if sn.storage_server_last_unreachable == 0%}Unknown{%else%}{{sn.storage_server_last_unreachable | from_timestamp | ago}} ago{%endif%}">
+            Reachable (as of {{sn.storage_server_last_reachable | from_timestamp | ago}} ago
+          </span>
+        {%else%}
+          <span title="Last reachable: {%if sn.storage_server_last_reachable == 0%}Unknown{%else%}{{sn.storage_server_last_reachable | from_timestamp | ago}} ago{%endif%}">
+          Not reachable (as of {{sn.storage_server_last_unreachable | from_timestamp | ago}} ago)
+          </span>
+        {%endif%}
+      </span>
+
+      <span>
+        <label{%if sn.lokinet_last_unreachable > sn.lokinet_last_reachable%} class="omg warning"{%endif%}>Lokinet:</label>
+        {%if sn.lokinet_last_reachable == 0 and sn.lokinet_last_unreachable == 0%}
+          Not yet tested
+        {%elif sn.lokinet_last_reachable >= sn.lokinet_last_unreachable%}
+          <span title="Last unreachable: {%if sn.lokinet_last_unreachable == 0%}Unknown{%else%}{{sn.lokinet_last_unreachable | from_timestamp | ago}} ago{%endif%}">
+            Reachable (as of {{sn.lokinet_last_reachable | from_timestamp | ago}} ago
+          </span>
+        {%else%}
+          <span title="Last reachable: {%if sn.lokinet_last_reachable == 0%}Unknown{%else%}{{sn.lokinet_last_reachable | from_timestamp | ago}} ago{%endif%}">
+          Not reachable (as of {{sn.lokinet_last_unreachable | from_timestamp | ago}} ago)
+          </span>
+        {%endif%}
+      </span>
+    {%endif%}
+
+    {%set pulse_voted = sn.pulse_participation | selectattr("voted") | list | length%}
+    {%set pulse_total = sn.pulse_participation | length%}
+    <span title="How many times the service node participated in Pulse block production from the last 8 blocks it was supposed to participate. (Service nodes may miss at most 4 before being decommissioned).">
+      <label{%if pulse_total >= 8 and pulse_voted < 4%} class="omg warning"{%endif%}>Pulse votes:</label>
+      {{pulse_voted}} / {{pulse_total}}
+    </span>
+
+    {%set cp_voted = sn.checkpoint_participation | selectattr("voted") | list | length%}
+    {%set cp_total = sn.checkpoint_participation | length%}
+    <span title="How many times the service node contributed a checkpoint vote from the last 8 blocks it was supposed to participate. (Service nodes may miss at most 4 before being decommissioned).">
+      <label{%if cp_total >= 8 and cp_voted < 4%} class="omg warning"{%endif%}>Checkpoint votes:</label>
+      {{cp_voted}} / {{cp_total}}
+    </span>
+
+    <span title="Storage server swarm">
+        <label>Swarm ID:</label>
+        {%if sn.swarm_id == 18446744073709551615%}(none){%else%}0x{{'{:016x}'.format(sn.swarm_id)}}{%endif%}
+    </span>
+
+    <!--<pre>{{quorums}}</pre>-->
+    {%set next_test = namespace(height=none)%}
+    {%for q in quorums.obligation[-13:]%}
+      {%if next_test.height%}{%break%}{%endif%}
+      {%if q.height + 13 >= info.height%}
+        {%for w in q.quorum.workers%}
+          {%if w == sn.service_node_pubkey%}
+            {%set next_test.height = q.height + 13%}
+            {%break%}
+          {%endif%}
+        {%endfor%}
+      {%endif%}
+    {%endfor%}
+    <span title="Next SN test">
+      <label>Next SN test:</label>
+      {%if next_test.height%}
+        Block {{next_test.height}}
+        ({%if next_test.height == info.height%}Now!{%else%}~{{((next_test.height - info.height) * 120) | reltime(in_ago=false)}}{%endif%})
+      {%else%}
+        <span title="&gt;12 blocks (~24 minutes): future test quorums are only known 12 blocks in advance">Unknown</span>
+      {%endif%}
+    </span>
+
+  </h4>
+
+  <h2>Service Node Status</h2>
+  <div class="TitleDivider"></div>
+  {%if sn.active %}
+    <p class="sn-active">Registered, staked, and active on the network since block {{sn.state_height}}.</p>
+  {%elif sn.funded%}
+    <p class="sn-decomm"><span class="omg">Decommissioned</span>: this service node is
+    registered and staked, but is currently <span class="omg">decommissioned</span> (since block
+    {{sn.state_height}}) for failing to meet service node requirements.
+    {%if sn.earned_downtime_blocks > 0%}
+      If it does not return to active duty within {{sn.earned_downtime_blocks}} blocks (about
+      {{(sn.earned_downtime_blocks * 120) | reltime(in_ago=false)}}) it will face <span class="omg">deregistration</span>.
+    {%else%}
+      The decommission time has expired; service node <span class="omg">deregistration</span> is imminent.
+    {%endif%}
+    </p>
+  {%else%}
+    <p class="sn-awaiting">Awaiting registration.  This service node has <span class="jude required">{{(sn.staking_requirement - sn.total_contributed) | jude}}</span>
+    remaining to be contributed.
+    {%if sn.num_open_spots > 0%}
+      The minimum required stake contribution is <span class="jude required">{{((sn.staking_requirement - sn.total_reserved) / sn.num_open_spots) | jude}}</span>.
+    {%endif%}
+    </p>
+  {%endif%}
+
+  <p class="sn-expiration{%if sn.requested_unlock_height > 0%} unlocking{%endif%}">
+    {%if sn.requested_unlock_height > 0%}
+      This service node is <span class="omg">scheduled to expire at block {{sn.requested_unlock_height}}</span>, in approximately
+      {{((sn.requested_unlock_height - info.height + 1) * 120) | reltime(in_ago=false) }}
+      ({{(server.timestamp + (sn.requested_unlock_height - info.height + 1) * 120) | from_timestamp | format_datetime('short')}} UTC, est.)
+    {%else%}
+      This service node is staking infinitely: no unlock has been initiated by any of its contributors.
+    {%endif%}
+  </p>
+
+  <h2>{{sn.contributors|length}} Contributor{%if sn.contributors|length > 1%}s{%endif%}</h2>
+    <div class="TitleDivider"></div>
+
+    <table style="width:100%">
+      <thead>
+        <tr>
+          <td>Contributor</td>
+          <td>Amount</td>
+          <td>Reserved</td>
+        </tr>
+      </thead>
+
+      <tbody>
+        {%for c in sn.contributors%}
+          <tr>
+            <td>{{c.address}}</td>
+            <td>{{c.amount | jude}}
+              {%-if c.locked_contributions and c.locked_contributions|length > 1%}
+                ({{c.locked_contributions|length}} contributions)
+              {%endif-%}
+            </td>
+            <td>{{c.reserved | jude}}</td>
+          </tr>
+        {%endfor%}
+      </tbody>
+    </table>
+
+    {#FIXME:#}
+    {%if pending_stakes and pending_stakes|length > 0%}
+      <h2>{{pending_stakes|length}} pending mempool contribution(s)</h2>
+      <div class="TitleDivider"></div>
+
+      <table class="pending-mempool-stakes">
+        <tr class="TableHeader">
+          <td>Contributor</td>
+          <td class="tx">TX</td>
+          <td>Amount</td>
+        </tr>
+
+        {%for s in pending_stakes%}
+          <tr>
+            <td>{{s.address}}</td>
+            <td class="tx"><a href="/tx/{{s.txid}}">{{s.txid}}</a></td>
+            <td>{{s.amount}}</td>
+          </tr>
+        {%endfor%}
+      </table>
+    {%endif%}
+
+    {%if details_html%}
+      <style type="text/css">
+        {{details_css | safe}}
+      </style>
+      <div class="TitleDivider" id="more_details"></div>
+        {{details_html | safe}}
+      {%else%}
+      <h5>
+        <a href="/sn/{{sn.service_node_pubkey}}/1#more_details">Show raw details</a>
+      </h5>
+    {%endif%}
+</div>
+{% endblock %}
+
