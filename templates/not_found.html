@@ -2,22 +2,26 @@
 
 {% block content %}
 
-<div class="Wrapper">
-    <h1>Not Found!</h1>
+<div class="section py-12">
+    <div class="card p-8 text-center max-w-lg mx-auto">
+        <h1 class="text-2xl font-bold text-slate-900 mb-2">Not Found</h1>
 
-    {%if type == 'tx'%}
-        <h2>The transaction with id <code>{{id}}</code> was not found on the blockchain.</h2>
-    {%elif type == 'sn'%}
-        <h2>The service node with pubkey <code>{{id}}</code> is not currently registered.</h2>
-    {%elif type == 'bad_search'%}
-      <h2>Invalid search request: <code>{{id}}</code></h2>
-      <h3>Please enter a block hash, height, transaction id, or service node public key.</h3>
-    {%elif type == 'search'%}
-      <h2>Not found: <code>{{id}}</code></h2>
-      <h3>Couldn't find a block, transaction, or service node matching your query.</h3>
-    {%else%}
-      <h3>Whoops! Couldn't find what you were looking for.</h3>
-    {%endif%}
+        {%if type == 'tx'%}
+            <p class="text-slate-600">Transaction <code class="font-mono text-xs bg-slate-100 px-1.5 py-0.5 rounded">{{id}}</code> was not found on the blockchain.</p>
+        {%elif type == 'sn'%}
+            <p class="text-slate-600">Service node <code class="font-mono text-xs bg-slate-100 px-1.5 py-0.5 rounded">{{id}}</code> is not currently registered.</p>
+        {%elif type == 'bad_search'%}
+            <p class="text-slate-600 mb-2">Invalid search: <code class="font-mono text-xs bg-slate-100 px-1.5 py-0.5 rounded">{{id}}</code></p>
+            <p class="text-sm text-slate-500">Enter a block hash, height, transaction ID, or service node public key.</p>
+        {%elif type == 'search'%}
+            <p class="text-slate-600 mb-2">Not found: <code class="font-mono text-xs bg-slate-100 px-1.5 py-0.5 rounded">{{id}}</code></p>
+            <p class="text-sm text-slate-500">No matching block, transaction, or service node.</p>
+        {%else%}
+            <p class="text-slate-600">Couldn't find what you were looking for.</p>
+        {%endif%}
+
+        <a href="/" class="inline-block mt-4 text-sm text-brand-600 hover:text-brand-700">&larr; Back to Explorer</a>
+    </div>
 </div>
 
 {% endblock %}

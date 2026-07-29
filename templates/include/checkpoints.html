@@ -1,43 +1,31 @@
-<div class="Wrapper">
-  <h2 style="margin-bottom: 0px">Last {{checkpoints.checkpoints | length}} checkpoints</h2>
-
-  <div class="TitleDivider"></div>
-
-  <table style="width:100%">
-    <thead>
-      <tr class="TableHeader">
-        <td>Height</td>
-        <td>Block hash</td>
-        <td>Checkpoint Quorum</td>
-      </tr>
-    </thead>
-
-    <tbody>
-      <tr>
-        <td>
-          <h2>⚑ No Data</h2>
-        </td>
-      </tr>
-      <!-- {%for cp in checkpoints.checkpoints%}
-        <tr>
-          <td><a class="cell_a" href="/block/{{cp.height}}">{{cp.height}}</a></td>
-          <td><a class="cell_a" href="/block/{{cp.block_hash}}">{{cp.block_hash}}</a></td>
-          <td>
-            <span>{{cp.signatures|length}}/20 signatures</span>
-            <a href="/checkpoint_quorum/{{cp.height}}">{{cp.signatures|length}}/20 signatures</a>:
-            {%for sig in cp.signatures%}
-              {%set prev_ind = 0 if loop.index0 == 0 else cp.signatures[loop.index0 - 1].voter_index%}
-              {%for missing in range(prev_ind + 1, sig.voter_index)%}
-                <span title="Missing signature from checkpoint quorum voter {{missing}}" class="checkpoint-not-signed">✕</span>
-              {%endfor%}
-              <span title="Signed by checkpoint quorum voter {{sig.voter_index}}" class="checkpoint-signed">✓</span>
-              {%endfor%}
-          {#  {%for missing in range(cp.signatures[-1].voter_index + 1, 20)%}
-                <span title="Missing signature from checkpoint quorum voter {{missing}}" class="checkpoint-not-signed">✕</span>
-              {%endfor%} #} 
-            {%endfor%}
-          </td>
-        </tr> -->
-    </tbody>
-  </table>
+<div class="section py-4">
+    <div class="card overflow-hidden">
+        <div class="px-4 py-3 border-b border-slate-200">
+            <h2 class="text-base font-semibold text-slate-900">Last {{checkpoints.checkpoints | length}} Checkpoints</h2>
+        </div>
+        <div class="table-wrap">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Height</th>
+                        <th>Block Hash</th>
+                        <th>Checkpoint Quorum</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {%for cp in checkpoints.checkpoints%}
+                    <tr>
+                        <td class="whitespace-nowrap"><a href="/block/{{cp.height}}">{{cp.height}}</a></td>
+                        <td class="font-mono text-xs"><a href="/block/{{cp.block_hash}}">{{cp.block_hash}}</a></td>
+                        <td>
+                            {%set sig_count = (cp.signatures or []) | length%}
+                            <span class="text-slate-700 whitespace-nowrap">{{sig_count}}/20 signatures</span>
+                            <span class="text-slate-700 whitespace-nowrap">{{sig_count}}/20 signatures</span>
+                        </td>
+                    </tr>
+                    {%endfor%}
+                </tbody>
+            </table>
+        </div>
+    </div>
 </div>
