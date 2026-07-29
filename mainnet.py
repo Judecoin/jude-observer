@@ -1,4 +1,4 @@
 from observer import app, config
-import judemq
+import oxenmq
 
-config.juded_rpc = judemq.Address('ipc://juded/mainnet.sock')
+config.oxend_rpc = oxenmq.Address('ipc:///var/lib/judecoin/judecoind.sock')
