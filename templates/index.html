@@ -1,207 +1,236 @@
 {% extends "_basic.html" %}
 
 {% block content %}
-<div class="section py-6">
+    <div class="Wrapper">
 
-    {# --- Sync warning --- #}
-    {% if sync_warning %}
-    <div class="bg-amber-50 border border-amber-300 rounded-lg px-4 py-3 mb-4 flex items-center gap-2">
-        <span class="text-amber-600 text-lg">⚠</span>
-        <span class="text-sm text-amber-800">
-            {% if sync_warning.type == 'syncing' %}
-                Node is syncing — {{ sync_warning.behind }} blocks behind (target: {{ sync_warning.target }}). Data may be incomplete.
-            {% elif sync_warning.type == 'stale' %}
-                Last block was {{ sync_warning.minutes }} minutes ago. Node may be out of sync — transaction pool and block data could be stale.
+        <div class="info_list nowrap-spans">
+            <span><label>Server Time:</label> {{ server.datetime | format_datetime }}</span>
+            <span><a href="/txpool">Transaction Pool</a></span>
+            {% if config.pusher %}
+                <span><a href="/rawtx">Transaction pusher </a></span>
             {% endif %}
-        </span>
-    </div>
-    {% endif %}
-
-    {# --- Top bar: server time --- #}
-    <div class="text-xs text-slate-500 mb-4">
-        <span>{{ server.datetime | format_datetime }}</span>
-    </div>
-
-    {# --- Network Stats Grid --- #}
-    {% if info %}
-    <div class="card p-4 mb-6">
-        <h2 class="text-sm font-semibold text-slate-700 uppercase tracking-wider mb-3">Network Overview</h2>
-        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div class="stat-item">
-                <div class="stat-label">Height</div>
-                <div class="stat-value">{{info.height}}</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">Hard Fork</div>
-                <div class="stat-value">v{{hf.version}}{%if 'revision' in hf%}.{{hf.revision}}{%endif%}</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">Difficulty</div>
-                <div class="stat-value">{{info.difficulty}}</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">Hash Rate</div>
-                <div class="stat-value">~{{(info.difficulty / info.target) | si }}H/s</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">Staking Req.</div>
-                <div class="stat-value">{{stake.staking_requirement | cash}}</div>
-            </div>
-            <div class="stat-item" title="{{(2500 * fees.fee_per_byte + 2*fees.get('fee_per_output', 0)) | cash(tag_name='JUDE')}} for a typical simple transaction (~2.5kB, 2 outputs)">
-                <div class="stat-label">Base Fee</div>
-                <div class="stat-value text-xs">{% if fees.fee_per_output is defined %}{{fees.fee_per_output | cash(tag_name='JUDE')}}/out + {% endif %}{{(fees.fee_per_byte * 1000) | cash(tag_name='JUDE')}}/kB</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">Block Size Limit</div>
-                <div class="stat-value">{{(info.block_size_limit / 2) | si}}B / {{info.block_size_limit | si}}B</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">Blockchain Size</div>
-                <div class="stat-value">{{info.database_size | si}}B</div>
-            </div>
-        </div>
-    </div>
-    {% endif %}
-
-    {# --- Circulating Supply --- #}
-    <div class="card p-4 mb-6">
-        <h2 class="text-sm font-semibold text-slate-700 uppercase tracking-wider mb-2">Circulating Supply</h2>
-        {% if not emission or emission.status == 'BUSY' %}
-            <p class="text-sm text-slate-500 italic">Calculating...</p>
-        {% elif emission.status == 'OK' %}
-            <div class="flex flex-wrap items-baseline gap-x-6 gap-y-1 text-sm">
-                <span class="text-lg font-bold text-slate-900">{{(emission.emission_amount - emission.burn_amount) | cash(tag_name='JUDE')}}</span>
-                <span class="text-slate-500" title="Gross emitted coins">Coinbase: <span class="font-medium text-slate-700">{{emission.emission_amount | cash(tag_name='JUDE')}}</span></span>
-                <span class="text-slate-500" title="Transaction fees">Fees: <span class="font-medium text-slate-700">{{emission.fee_amount | cash(tag_name='JUDE')}}</span></span>
-                <span class="text-slate-500" title="Burned fees">Burned: <span class="font-medium text-slate-700">{{emission.burn_amount | cash(tag_name='JUDE')}}</span></span>
-                <span class="text-slate-500" title="Accrued batch rewards">Batched: <span class="font-medium text-slate-700">{{accrued_total | cash}}</span></span>
-            </div>
-            <p class="text-xs text-slate-400 mt-1">* May exclude locked JUDE. Fees = paid TX fees minus burned portion.</p>
-        {%endif%}
-    </div>
-
-    {# --- TX Type Legend --- #}
-    <div class="tx-legend mb-4">
-        <span class="font-medium text-slate-600">TX Types:</span>
-        <span>🏁 Registration</span>
-        <span>⚑ Contribution</span>
-        <span>👍 Recommission</span>
-        <span>👎 Decommission</span>
-        <span>🚫 Deregistration</span>
-        <span>📋 IP Change</span>
-        <span>🔓 Unlock</span>
-    </div>
-</div>
-
-{# --- Mempool --- #}
-{% include 'include/mempool.html' %}
-
-{# --- Block Transactions --- #}
-<div class="section py-4">
-    <div class="card overflow-hidden">
-        <div class="px-4 py-3 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
-            <div>
-                <h2 class="text-base font-semibold text-slate-900">
-                    Transactions in
-                    {% if not blocks %}
-                        0 Blocks
-                    {% elif page == 0 %}
-                        the Last {{blocks|length}} Blocks
+            {% if config.key_image_checker %}
+                <span><a href="/rawkeyimgs">Key images checker</a></span>
+            {% endif %}
+            {% if config.output_key_checker %}
+                <span><a href="/rawoutputkeys">Output keys checker</a></span>
+            {% endif %}
+            {% if config.autorefresh_option %}
+                <span>
+                    {% if refresh %}
+                        <a href="/">Autorefresh is ON ({{refresh}} s)</a>
                     {% else %}
-                        Blocks {{blocks[0].height}}–{{blocks[-1].height}}
+                        <a href="/autorefresh/10">Autorefresh is OFF</a>
                     {% endif %}
-                    {% if blocks %}
-                        <a class="text-slate-400 hover:text-brand-600 text-sm ml-1" href="/range/{{blocks[0].height}}/{{blocks[-1].height}}" title="Permanent link">🔗</a>
-                    {% endif %}
-                </h2>
-                {% set block_weights = blocks | map(attribute='block_weight') | sort %}
-                {%if block_weights|count > 0%}
-                <p class="text-xs text-slate-500 mt-0.5">
-                    Block weights — Min: {{block_weights[0] | si}}B
-                    · Median: {{(block_weights[(block_weights|count-1)//2]/2 + block_weights[(block_weights|count)//2]/2) | si}}B
-                    · Avg: {{(block_weights|sum / block_weights|count) | si}}B
-                    · Max: {{block_weights[-1] | si}}B
-                </p>
-                {%endif%}
-            </div>
+                </span>
+            {% endif %}
+
+            <!-- {% if config.testnet_url and not info.testnet %}
+                <span><a href="{{config.testnet_url}}">Go to testnet explorer</a></span>
+            {% endif %}
+            {% if config.devnet_url and not info.devnet %}
+                <span><a href="{{config.devnet_url}}">Go to devnet explorer</a></span>
+            {% endif %}
+            {% if config.mainnet_url and not info.mainnet %}
+                <span><a href="{{config.mainnet_url}}">Go to mainnet explorer</a></span>
+            {% endif %}
+            {% if info.testnet %}
+                <span>This is <span style="color:#ff6b62; font-weight: bold">TESTNET</span> blockchain</span>
+            {% elif info.devnet %}
+                <span>This is <span style="color:#af5bd2; font-weight: bold">DEVNET</span> blockchain</span>
+            {% endif %} -->
         </div>
 
-        <div class="table-wrap">
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>Height</th>
-                        <th>Age</th>
-                        <th>Size</th>
-                        <th>Type</th>
-                        <th>Transaction Hash</th>
-                        <th>Fee</th>
-                        <th title="Batched reward payments">Rewards</th>
-                        <th>In/Out</th>
-                        <th>TX Size</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% import 'include/tx_type_symbol.html' as symbol %}
-                    {% import 'include/tx_fee.html' as fee %}
-                    {% for b in blocks | reverse %}
-                      {% set tx_i = 0 %}
-                      {% if b.txs | length > 0 and b.txs[0].coinbase %}
-                        {% set tx_i = 1 %}
-                        <tr class="block-row">
-                          <td class="font-medium whitespace-nowrap"><a href="/block/{{b.height}}">{{b.height}}</a></td>
-                          <td class="text-slate-500" title="{{b.timestamp | from_timestamp | format_datetime}}">{{b.timestamp | from_timestamp | ago}}</td>
-                          <td>{{b.block_size | si}}</td>
-                          <td>{{symbol.display(b.txs[0])}}</td>
-                          <td class="font-mono text-xs"><a href="/tx/{{b.txs[0].tx_hash}}">{{b.txs[0].tx_hash}}</a></td>
-                          <td>{{fee.display(b.txs[0])}}</td>
-                          <td>{{b.coinbase_payouts | cash(tag=False, fixed=True, decimals=2)}}</td>
-                          <td>0/{{b.txs[0].vout | length}}</td>
-                          <td>{{b.txs[0].size | si}}</td>
-                        </tr>
-                      {% else %}
-                        <tr class="block-row">
-                          <td class="font-medium whitespace-nowrap"><a href="/block/{{b.height}}">{{b.height}}</a></td>
-                          <td class="text-slate-500" title="{{b.timestamp | from_timestamp | format_datetime}}">{{b.timestamp | from_timestamp | ago}}</td>
-                          <td>{{b.block_size | si}}</td>
-                          <td></td><td></td><td></td><td></td><td></td><td></td>
-                        </tr>
-                      {%endif%}
-                      {% for tx in b.txs[tx_i:] %}
-                        <tr>
-                          <td></td><td></td><td></td>
-                          <td>{{symbol.display(tx)}}</td>
-                          <td class="font-mono text-xs"><a href="/tx/{{tx.tx_hash}}">{{tx.tx_hash}}</a></td>
-                          <td>{{fee.display(tx)}}</td>
-                          <td></td>
-                          <td>{{tx.vin | length}}/{{tx.vout | length}}</td>
-                          <td>{{tx.size | si}}</td>
-                        </tr>
-                      {% endfor %}
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
+        <div class="TitleDivider"></div>
+
+        {% if info %}
+            <h3 class="general_info info_list nowrap-spans">
+                <!-- <span><label>Height:</label> {{info.height}}</span> -->
+                <span><label>Height:</label> {{0}}</span>
+                <!-- <span><label>Hard fork:</label> v{{hf.version}}{%if 'revision' in hf%}.{{hf.revision}}{%endif%}</span> -->
+                <span><label>Hard fork:</label> v17</span>
+                {% if hf.version >= 16 %}
+                    <span title="{{ info.pulse_target_timestamp | from_timestamp | format_datetime }}
+                                 {%-if info.pulse_target_timestamp != info.pulse_ideal_timestamp %}
+{{ (info.pulse_target_timestamp - info.pulse_ideal_timestamp) | reltime(two_part=true, in_ago=false) }}
+                                 {%-if info.pulse_target_timestamp > info.pulse_ideal_timestamp %} behind {%else%} ahead of {%endif%} schedule
+                                 {%-endif-%}
+                                 ">
+                        <label>Next Pulse:</label> {{(info.pulse_target_timestamp|from_timestamp - server.datetime) | reltime(neg_is_now=true) }}
+                    </span>
+                {% else %}
+                    <!-- <span><label>Network difficulty:</label> {{info.difficulty}}</span> -->
+                    <span><label>Network difficulty:</label> {{0}}</span>
+                    <!-- <span><label>Hash rate:</label> ~{{(info.difficulty / info.target) | si }}H/s</span> -->
+                    <span><label>Hash rate:</label> ~{{0 | si }}H/s</span>
+                {% endif %}
+                <!-- <span><label>Staking requirement:</label> {{stake.staking_requirement | jude}}</span> -->
+                <span><label>Staking requirement:</label> {{0 | jude}}</span>
+                <span title="{{(2500 * fees.fee_per_byte + 2*fees.fee_per_output) | jude}} for a typical simple transaction (~2.5kB, 2 outputs)">
+                    <label>Base fee:</label>
+                    <!-- {{fees.fee_per_output | jude}}/output + {{(fees.fee_per_byte * 1000) | jude}}/kB -->
+                    {{fees.fee_per_output | jude}}/output + {{0 | jude}}/kB
+                </span>
+                <!-- <span title="{{(2500 * fees.blink_fee_per_byte + 2*fees.blink_fee_per_output) | jude}} for a typical simple blink transaction (~2.5kB, 2 outputs)">
+                    <label>Blink fee:</label>
+                    {{fees.blink_fee_per_output | jude}}/output + {{(fees.blink_fee_per_byte * 1000) | jude}}/kB
+                </span> -->
+                <span title="{{(info.block_size_limit / 2) | si}}B soft limit, {{info.block_size_limit | si}}B hard limit. Blocks may include TXes up to the soft limit without penalty and incur increasing reward penalties as they approach the hard limit.">
+                    <label>Block size limit:</label>
+                    <!-- {{(info.block_size_limit / 2) | si}}B/{{info.block_size_limit | si}}B -->
+                    {{0 | si}}B/{{0 | si}}B
+                </span>
+                <!-- <span><label>Blockchain size:</label> {{info.database_size | si}}B</span> -->
+                <span><label>Blockchain size:</label> {{0 | si}}B</span>
+            </h3>
+        {% endif %}
+
+        <!-- <h4 class="info_list nowrap-spans">
+            <span><label>Circulating Supply*:</label>:
+                {% if not emission or emission.status == 'BUSY' %}
+                    (still calculating...)</span>
+                {% elif emission.status == 'OK' %}
+                    {{(emission.emission_amount - emission.burn_amount) | jude}}</span>
+                <span title="Gross emitted coins"><label>(Coinbase:</label> {{emission.emission_amount | jude}}</span>
+                <span title="Transfers paid as transaction fees"><label>Fees:</label> {{emission.fee_amount | jude}}</span>
+                <span title="Permanently destroyed (&quot;burned&quot;) fees"><label>Burned:</label> {{emission.burn_amount | jude}}</span>
+                <span title="Accrued batch rewards not yet paid out"><label>Batched:</label> {{accrued_total | jude}}</span><label>).</label>
+                {%endif%}
+            <p style="padding: 0px; margin-top: 2px; font-size: 0.9em">
+            * — The circulating supply may exclude any currently publicised locked JUDE; otherwise it is equal to the coinbase minus the number of burned coins.
+            Fees include paid transaction fees minus any portion that was burned.
+            </p>
+        </h4> -->
+
+        <div class="TitleDivider"></div>
+
+        <h4 class="tx-type-legend info_list nowrap-spans" style="margin-top: 0">
+            <span><label>TX Type Legend:</label> <img class="image" src="../static/registration.png" alt="">  Service Node Registration</span>
+            <span><img class="image" src="../static/contribution.png" alt=""> Contribution</span>
+            <span><img class="image" src="../static/recommission.png" alt=""> Recommission</span>
+            <span><img class="image" src="../static/decommission.png" alt="">  Decommission</span>
+            <span><img class="image" src="../static/deregistration.png" alt="">  Deregistration</span>
+            <span><img class="image" src="../static/ip_change_penalty.png" alt="">  IP Change Penalty</span>
+            <span><img class="image" src="../static/stake_unlock.png" alt="">  Stake Unlock</span>
+            <!-- <span><img class="image" src="../static/system_purchase.png" alt="">  Jude Name System Purchase</span>
+            <span><img class="image" src="../static/ONS_update.png" alt="">  ONS Update</span> -->
+        </h4>
+    </div>
+
+    {% include 'include/mempool.html' %}
+
+    <div class="Wrapper">
+        <h2>Transactions in
+            {% if page == 0 %}
+                the Last {{blocks|length}} Blocks
+            {% else %}
+                Blocks {{blocks[0].height}}–{{blocks[-1].height}}
+            {% endif %}
+            <a class="linked-icon" href="/range/{{blocks[0].height}}/{{blocks[-1].height}}" title="Permanent link to this block range">🔗</a>
+        </h2>
+
+        {% set block_sizes = blocks | map(attribute='block_size') | sort %}
+        {%if block_sizes|count > 0%}
+          <h4 class="Subtitle">(Min. / Median / Average / Max. size of these blocks:
+            {{block_sizes[0] | si}}B /
+            {{(block_sizes[(block_sizes|count-1)//2]/2 + block_sizes[(block_sizes|count)//2]/2) | si}}B /
+            {{(block_sizes|sum / block_sizes|count) | si}}B /
+            {{block_sizes[-1] | si}}B)
+          </h4>
+        {%endif%}
+        <div class="TitleUnderliner"></div>
+
+        {% include 'include/block_page_controls.html' %}
+
+        <table class="Table">
+          <thead>
+            <tr>
+                <td>Height</td>
+                <td>Age [h:m:s]</td>
+                <td>Size</td>
+                <td>Type</td>
+                <td>Transaction Hash</td>
+                <td>Fee</td>
+                <!-- <td title="Batched reward payments">Rewards</td> -->
+                <td>In/Out</td>
+                <td>TX Size</td>
+            </tr>
+          </thead>
+          <tbody>
+            {% import 'include/tx_type_symbol.html' as symbol %}
+            {% import 'include/tx_fee.html' as fee %}
+            {% for b in blocks | reverse %}
+              {% set tx_i = 0 %}
+              {% if b.txs | length > 0 and b.txs[0].coinbase %}
+                {% set tx_i = 1 %}
+                <!-- <tr class="block">
+                  <td><a href="/block/{{b.height}}">{{b.height}}</a></td>
+                  <td title="{{b.timestamp | from_timestamp | format_datetime}}">{{b.timestamp | from_timestamp | ago}}</td>
+                  <td>{{b.block_size | si}}</td>
+                  <td>{{symbol.display(b.txs[0])}}</td>
+                  <td><a class="cell_a" href="/tx/{{b.txs[0].tx_hash}}">{{b.txs[0].tx_hash}}</a></td>
+                  <td>{{fee.display(b.txs[0])}}</td>
+                  <td>{{b.coinbase_payouts | jude(tag=False, fixed=True, decimals=2)}}</td>
+                  <td>0/{{b.txs[0].info.vout | length}}</td>
+                  <td>{{b.txs[0].size | si}}</td>
+                </tr> -->
+                <tr class="block">
+                    <td><a href="/block/0">0</a></td>
+                    <td title="{{b.timestamp | from_timestamp | format_datetime}}">54:252:04:26:04</td>
+                    <td>0.12</td>
+                    <td>{{symbol.display(b.txs[0])}}</td>
+                    <td><a class="cell_a" href="/tx/{{b.txs[0].tx_hash}}">e7ad9d82c087fcca0ca4b9f1ff11391af441e741299114779b05cca12cab1130</a></td>
+                    <td>N/A</td>
+                    <!-- <td>{{b.coinbase_payouts | jude(tag=False, fixed=True, decimals=2)}}</td> -->
+                    <td>0/2</td>
+                    <td>0.12</td>
+                  </tr>
+              {% else %}
+                {# no miner tx, e.g. from batching #}
+                <tr class="block">
+                  <td><a  class="cell_a" href="/block/{{b.height}}">{{b.height}}</a></td>
+                  <td title="{{b.timestamp | from_timestamp | format_datetime}}">{{b.timestamp | from_timestamp | ago}}</td>
+                  <td>{{b.block_size | si}}</td>
+                  <td></td>
+                  <td></td>
+                  <td></td>
+                  <!-- <td></td> -->
+                  <td></td>
+                  <td></td>
+                </tr>
+              {%endif%}
+              {% for tx in b.txs[tx_i:] %}
+                <tr class="tx">
+                  <td></td>
+                  <td></td>
+                  <td></td>
+                  <td>{{symbol.display(tx)}}</td>
+                  <td><a class="cell_a" href="/tx/{{tx.tx_hash}}">{{tx.tx_hash}}</a></td>
+                  <td>{{fee.display(tx)}}</td>
+                  <!-- <td></td> -->
+                  <td>{{tx.info.vin | length}}/{{tx.info.vout | length}}</td>
+                  <td>{{tx.size | si}}</td>
+                </tr>
+              {% endfor %}
+            {% endfor %}
+          </tbody>
+        </table>
 
         {% include 'include/block_page_controls.html' %}
     </div>
-</div>
 
-{# --- Service Nodes --- #}
-{%set limit_awaiting = 10%}
-{%set limit_inactive = 10%}
-{%set limit_active = 10%}
-{%include 'include/service_nodes_lists.html'%}
+    {%set limit_awaiting = 10%}
+    {%set limit_inactive = 10%}
+    {%set limit_active = 10%}
 
-{# --- Checkpoints --- #}
-{%if checkpoints and checkpoints.checkpoints|length > 0%}
-  {%include 'include/checkpoints.html'%}
-{%endif%}
+    {%include 'include/service_nodes_lists.html'%}
 
-<div class="section py-4">
-    <a href="/quorums" class="inline-flex items-center gap-1 text-sm font-medium text-brand-600 hover:text-brand-700">
-        View recent quorums &rarr;
-    </a>
-</div>
+    {%if checkpoints and checkpoints.checkpoints|length > 0%}
+      {%include 'include/checkpoints.html'%}
+    {%endif%}
+
+    <!-- <div class="Wrapper">
+      <h2> <a href="/quorums">View recent stored testing/checkpoint/blink/pulse quorums</a> </p>
+    </div> -->
 
 {% endblock %}
