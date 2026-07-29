@@ -1,163 +1,59 @@
 {# Basic content template: provides an overridable header/content/footer #}
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-  {% block head %}
-    <title>{% block title %}{% endblock %}Jude{{' TESTNET' if info and info.testnet else ' DEVNET' if info and info.devnet else ' STAGENET' if info and info.stagenet else ''}} Blockchain Explorer</title>
-    <meta charset="utf-8">
-    <meta name="viewport" id="viewport-meta" content="width=device-width, initial-scale=1">
-    <script>
-      /* Phone portrait: render the 980px desktop layout scaled down (same as judeblock.org).
-         Phone landscape, tablets and desktop keep the normal responsive viewport. */
-      (function () {
-        var vp = document.getElementById('viewport-meta');
-        var mq = window.matchMedia('(orientation: portrait)');
-        function apply() {
-          var shortSide = Math.min(screen.width, screen.height);
-          var isPhone = shortSide < 600;
-          if (isPhone && mq.matches) {
-            vp.setAttribute('content', 'width=980, initial-scale=' + (shortSide / 980).toFixed(4));
-            document.documentElement.classList.add('zoomed-mobile');
-          } else {
-            vp.setAttribute('content', 'width=device-width, initial-scale=1');
-            document.documentElement.classList.remove('zoomed-mobile');
-          }
-        }
-        apply();
-        if (mq.addEventListener) { mq.addEventListener('change', apply); } else { mq.addListener(apply); }
-      })();
-    </script>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-      tailwind.config = {
-        theme: {
-          extend: {
-            colors: {
-              brand: {
-                50: '#eef2ff',
-                100: '#e0e7ff',
-                200: '#c7d2fe',
-                300: '#a5b4fc',
-                400: '#818cf8',
-                500: '#6366f1',
-                600: '#4f46e5',
-                700: '#4338ca',
-                800: '#3730a3',
-                900: '#312e81',
-              }
-            },
-            fontFamily: {
-              sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
-              mono: ['JetBrains Mono', 'Fira Code', 'monospace'],
-            }
-          }
-        }
-      }
-    </script>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    {% block head %}
+    <title>{% block title %}{% endblock %}Jude{{' TESTNET' if info and info.testnet else ' DEVNET' if info and
+        info.devnet else ''}}
+        Blockchain Explorer</title>
     <link rel="stylesheet" type="text/css" href="/style.css">
     {% if refresh %}
-      <meta http-equiv="refresh" content="{{refresh}}">
+    <meta http-equiv="refresh" content="{{refresh}}">
     {% endif %}
-  {% endblock %}
-  <link rel="icon" type="image/png" href="/static/favicon16.png" sizes="16x16">
-  <link rel="icon" type="image/png" href="/static/favicon32.png" sizes="32x32">
-  <link rel="icon" type="image/png" href="/static/favicon96.png" sizes="96x96">
+    {% endblock %}
+    <link rel="icon" type="image/png" href="/favicon16.png" sizes="16x16">
+    <link rel="icon" type="image/png" href="/favicon32.png" sizes="32x32">
+    <link rel="icon" type="image/png" href="/favicon96.png" sizes="96x96">
 </head>
 
-<body class="bg-slate-50 text-slate-900 font-sans antialiased min-h-screen flex flex-col">
+<body>
+    <div id="header" class="Wrapper">
+        {% block header %}
+        <div id="header-content">
+            <h1 class="Header header-title"><a href="/">Jude
+                    {%if info and info.testnet%}
+                    <span style="color:#ff6b62">Testnet</span>
+                    {%elif info and info.devnet%}
+                    <span style="color:#af5bd2">Devnet</span>
+                    {%endif%}
+                    Blockchain Explorer</a></h1>
+            <h3 class="sub-title"> build on RPC - no cookies - no web analytics trackers - no images - open sourced - awesome - safe</h3>
 
-<header class="site-header sticky top-0 z-50">
-  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
-    {% block header %}
-    <!-- Row 1: Logo left, Nav right -->
-    <div class="flex items-center justify-between py-3">
-      <a href="/" class="flex items-center gap-2.5 no-underline">
-        <img src="/static/jude-logo.png" alt="Jude" width="32" height="32" class="rounded-full">
-        <span class="text-lg font-bold tracking-wide" style="color:#5C65F2">JUDECOIN</span>
-        {%if info and info.nettype == "testnet"%}
-          <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-500/20 text-red-300">Testnet</span>
-        {%elif info and info.nettype == "devnet"%}
-          <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300">Devnet</span>
-        {%elif info and info.nettype == "stagenet"%}
-          <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-500/20 text-green-300">Stagenet</span>
-        {%endif%}
-      </a>
-      <nav class="hidden md:flex items-center gap-1 text-sm">
-        <a href="/" class="header-nav-link">Home</a>
-        <a href="/service_nodes" class="header-nav-link">Nodes</a>
-        <a href="/statistics" class="header-nav-link">Statistics</a>
-      </nav>
-      <!-- Mobile menu button -->
-      <button id="mobile-menu-btn" class="md:hidden text-slate-300 hover:text-white p-1">
-        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
-      </button>
+            <form action="/search" method="get" class="top-search">
+                <input type="text" name="value" size="64"
+                    placeholder="Block height, Block hash, Transaction ID">
+                <input type="submit" class="PageButton" value="Search">
+            </form>
+        </div>
+        <div class="TitleUnderliner" style="margin-bottom: 1em"></div>
+        {% endblock %}
     </div>
-    <!-- Row 2: Title -->
-    <div class="text-center pb-2">
-      <h1 class="text-xl sm:text-2xl font-bold text-white tracking-widest">JUDE BLOCKCHAIN EXPLORER</h1>
-    </div>
-    <!-- Row 3: Search bar -->
-    <div class="pb-6 flex justify-center">
-      <form action="/search" method="get" class="w-full max-w-2xl flex">
-        <input type="text" name="value"
-          class="flex-1 px-4 py-2.5 text-sm border-0 rounded-l-lg bg-white text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[#5C65F2] transition"
-          placeholder="Search by block, transaction, SN pubkey or address...">
-        <button type="submit"
-          class="px-5 py-2.5 bg-[#5C65F2] text-white text-sm font-semibold rounded-r-lg hover:bg-[#4B53E0] transition-colors">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-        </button>
-      </form>
-    </div>
-    <!-- Mobile nav dropdown -->
-    <div id="mobile-menu" class="hidden md:hidden pb-4 border-t border-white/10 pt-3">
-      <a href="/" class="header-nav-link block py-2">Home</a>
-      <a href="/service_nodes" class="header-nav-link block py-2">Nodes</a>
-      <a href="/statistics" class="header-nav-link block py-2">Statistics</a>
-    </div>
+
+    {% block content %}
     {% endblock %}
-  </div>
-  <!-- Mountain silhouette decoration -->
-  <div class="absolute bottom-0 left-0 w-full overflow-hidden" style="height:40px;">
-    <svg viewBox="0 0 1440 40" fill="none" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none" class="w-full h-full">
-      <path d="M0 40 L0 28 L60 22 L120 26 L180 18 L240 24 L300 14 L360 20 L420 10 L480 16 L540 8 L600 14 L660 6 L720 12 L780 4 L840 10 L900 6 L960 12 L1020 8 L1080 14 L1140 10 L1200 16 L1260 12 L1320 18 L1380 14 L1440 20 L1440 40 Z" fill="#0f1520" opacity="0.5"/>
-      <path d="M0 40 L0 32 L80 26 L160 30 L240 22 L320 28 L400 18 L480 24 L560 16 L640 22 L720 12 L800 18 L880 14 L960 20 L1040 16 L1120 22 L1200 18 L1280 24 L1360 20 L1440 26 L1440 40 Z" fill="#0f1520" opacity="0.3"/>
-    </svg>
-  </div>
-</header>
 
-<main class="flex-1">
-  {% block content %}
-  {% endblock %}
-</main>
-
-<footer class="border-t border-slate-200 bg-white mt-12">
-  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-    {% block footer %}
-    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-      <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-        <a href="/" class="text-slate-500 hover:text-brand-600 transition-colors">Home</a>
-        <a href="/service_nodes" class="text-slate-500 hover:text-brand-600 transition-colors">Service Nodes</a>
-        <a href="/statistics" class="text-slate-500 hover:text-brand-600 transition-colors">Statistics</a>
-      </div>
-      <p class="text-sm text-slate-400">
-        <a href="https://github.com/judecoin/jude-observer" class="hover:text-brand-600 transition-colors">Source Code</a>
-        <span class="mx-1.5 text-slate-300">·</span>
-        <span class="font-mono text-xs">{{server.revision}}</span>
-        <span class="mx-1.5 text-slate-300">·</span>
-        <span class="font-mono text-xs">{{info.version}}</span>
-      </p>
+    <div id="footer" class="Wrapper">
+        {% block footer %}
+        <div class="TitleDivider" style="margin-top: 1em"></div>
+        <p style="margin-top:10px">
+            <a href="https://github.com/Judecoin">Source Code</a>
+            | Explorer Revision: {{server.revision}}
+            | Judecoin Version: 3.0.0-debug
+        </p>
+        {% endblock %}
     </div>
-    {% endblock %}
-  </div>
-</footer>
 
-<script>
-document.getElementById('mobile-menu-btn')?.addEventListener('click',function(){
-  document.getElementById('mobile-menu')?.classList.toggle('hidden');
-});
-</script>
 </body>
+
 </html>

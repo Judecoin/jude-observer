@@ -1,4 +1,5 @@
 from observer import app, config
-import oxenmq
+import pyjudemq as judemq
 
-config.oxend_rpc = oxenmq.Address('ipc://oxend/testnet.sock')
+
+config.juded_rpc = judemq.Address('ipc://juded/testnet.sock')
