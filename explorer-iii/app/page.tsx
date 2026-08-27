@@ -28,6 +28,13 @@ type Transaction = {
   txType: string;
 };
 
+type TransactionPoolSnapshot = {
+  available: boolean;
+  count: number;
+  totalBytes: number;
+  transactions: Array<{ hash: string; receivedAt: number; txType: string; fee: number; size: number; inputs: number; outputs: number }>;
+};
+
 type ChainSnapshot = {
   live: boolean;
   source: string;
@@ -54,11 +61,7 @@ type ChainSnapshot = {
   };
   blocks: Array<{ height: number; timestamp: number; hash: string; txs: number; size: number; difficulty: number; fee: number; reward: number; inputs: number; outputs: number }>;
   transactions: Array<{ hash: string; block: number; timestamp: number; size: number | null; confirmations: number; fee: number; reward: number; inputs: number; outputs: number; txType: string }>;
-  transactionPool: {
-    count: number;
-    totalBytes: number;
-    transactions: Array<{ hash: string; receivedAt: number; txType: string; fee: number; size: number; inputs: number; outputs: number }>;
-  };
+  transactionPool: TransactionPoolSnapshot;
   pagination: { blockPage: number; transactionPage: number; pageSize: number; transactionScanSize: number };
   serviceNodes: {
     total: number;
@@ -124,6 +127,8 @@ type ChainSnapshot = {
   };
 };
 
+type NetworkPreview = Pick<ChainSnapshot, "live" | "source" | "node" | "fetchedAt" | "network">;
+
 type Detail = {
   title: string;
   kind?: "transaction" | "block" | "service-node";
@@ -156,6 +161,10 @@ const SNAPSHOT_CACHE_TTL_MS = 12_000;
 const SNAPSHOT_RETRY_DELAYS_MS = [0, 1_200, 3_000] as const;
 const snapshotCache = new Map<string, { data: ChainSnapshot; expiresAt: number }>();
 const snapshotRequests = new Map<string, Promise<ChainSnapshot>>();
+let networkPreviewCache: { data: NetworkPreview; expiresAt: number } | null = null;
+let networkPreviewRequest: Promise<NetworkPreview> | null = null;
+let transactionPoolCache: { data: TransactionPoolSnapshot; expiresAt: number } | null = null;
+let transactionPoolRequest: Promise<TransactionPoolSnapshot> | null = null;
 
 function isBlockHeightLabel(label: string) {
   return /\bHEIGHT\b|\bAT BLOCK\b|\bREWARD BLOCK\b|\bDECOMMISSION BLOCK\b|\bIP CHANGE BLOCK\b|\bREGISTERED BLOCK\b/.test(label);
@@ -189,6 +198,30 @@ async function fetchSnapshotWithRetry(params: URLSearchParams) {
     }
   }
   throw lastError instanceof Error ? lastError : new Error("Network data unavailable");
+}
+
+async function fetchNetworkPreview() {
+  if (networkPreviewCache && networkPreviewCache.expiresAt > Date.now()) return networkPreviewCache.data;
+  if (networkPreviewRequest) return networkPreviewRequest;
+  networkPreviewRequest = fetch("/api/network").then(async (response) => {
+    if (!response.ok) throw new Error("Network overview unavailable");
+    const data = await response.json() as NetworkPreview;
+    networkPreviewCache = { data, expiresAt: Date.now() + SNAPSHOT_CACHE_TTL_MS };
+    return data;
+  }).finally(() => { networkPreviewRequest = null; });
+  return networkPreviewRequest;
+}
+
+async function fetchTransactionPool() {
+  if (transactionPoolCache && transactionPoolCache.expiresAt > Date.now()) return transactionPoolCache.data;
+  if (transactionPoolRequest) return transactionPoolRequest;
+  transactionPoolRequest = fetch("/api/transaction-pool").then(async (response) => {
+    if (!response.ok) throw new Error("Transaction pool unavailable");
+    const data = await response.json() as TransactionPoolSnapshot;
+    transactionPoolCache = { data, expiresAt: Date.now() + SNAPSHOT_CACHE_TTL_MS };
+    return data;
+  }).finally(() => { transactionPoolRequest = null; });
+  return transactionPoolRequest;
 }
 
 function PaginationControls({ page, lastPage, pageSize, onPageChange, onPageSizeChange, onPrefetchPage, disableNext = false, loading = false }: {
@@ -301,6 +334,8 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
   const [message, setMessage] = useState("");
   const [searchLoading, setSearchLoading] = useState(false);
   const [snapshot, setSnapshot] = useState<ChainSnapshot | null>(null);
+  const [networkPreview, setNetworkPreview] = useState<NetworkPreview | null>(null);
+  const [transactionPoolSnapshot, setTransactionPoolSnapshot] = useState<TransactionPoolSnapshot | null>(null);
   const [connection, setConnection] = useState<"loading" | "live" | "offline">("loading");
   const [detail, setDetail] = useState<Detail | null>(null);
   const [detailPending, setDetailPending] = useState<DetailPending | null>(null);
@@ -352,12 +387,23 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
   useEffect(() => {
     let active = true;
     const load = async () => {
+      void fetchNetworkPreview().then((data) => {
+        if (!active) return;
+        setNetworkPreview(data);
+        setConnection("live");
+      }).catch(() => undefined);
+      void fetchTransactionPool().then((data) => {
+        if (active) setTransactionPoolSnapshot(data);
+      }).catch(() => undefined);
       try {
         const params = snapshotParams();
         const data = await fetchSnapshotWithRetry(params);
         if (active) { setSnapshot(data); setConnection("live"); setQuorumError(""); }
       } catch {
-        if (active) { setConnection("offline"); setQuorumError("Unable to load this page"); }
+        if (active) {
+          setConnection((current) => current === "live" ? current : "offline");
+          setQuorumError("Unable to load this page");
+        }
       } finally {
         if (active) setQuorumLoading(false);
       }
@@ -429,6 +475,9 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
   })) : [];
 
   const particles = useMemo(() => Array.from({ length: 24 }, (_, i) => i), []);
+  const liveNetwork = snapshot?.network ?? networkPreview?.network ?? null;
+  const transactionPool = transactionPoolSnapshot
+    ?? (snapshot?.transactionPool.available ? snapshot.transactionPool : null);
   const currentServiceNodeTotal = snapshot?.serviceNodes.total ?? 0;
   const lockedDeregisteredServiceNodeTotal = snapshot
     ? snapshot.deregisteredServiceNodes.nodes.filter((node) => node.unlockedAt > snapshot.network.height).length
@@ -736,10 +785,10 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
         </a>
         <div className="nav-links">
           <a className={!serviceNodesOnly && !statisticsOnly ? "active" : undefined} href="/">{"Home"}</a>
-          <button type="button" onClick={() => openSection("blocks")}>{"Blocks"}</button>
-          <button type="button" onClick={() => openSection("transactions")}>{"Transactions"}</button>
           <a className={serviceNodesOnly ? "active" : undefined} href="/service-nodes">{"Service Nodes"}</a>
           <a className={statisticsOnly ? "active" : undefined} href="/statistics">{"Statistics"}</a>
+          <button type="button" onClick={() => openSection("blocks")}>{"Blocks"}</button>
+          <button type="button" onClick={() => openSection("transactions")}>{"Transactions"}</button>
           <button type="button" onClick={() => openSection("quorums")}>{"Quorums"}</button>
         </div>
       </nav>
@@ -759,14 +808,14 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
 
       <section className="metrics shell" id="network" aria-busy={connection === "loading"}>
         <span className="sr-only" role="status" aria-live="polite">{connection === "loading" ? "Connecting to Judecoin mainnet and loading live network data." : connection === "offline" ? "Live network data is temporarily unavailable." : "Live Judecoin mainnet data loaded."}</span>
-        <article><small>{"CHAIN HEIGHT"}</small><strong className="block-height">{snapshot ? compact(snapshot.network.height) : connection === "loading" ? <MetricSkeleton width="short" /> : "—"}</strong><span className={snapshot?.network.synced ? "trend" : "warning"}>{connection === "offline" ? "Network data unavailable" : connection === "loading" ? "Connecting to mainnet" : snapshot?.network.synced ? "Mainnet · synced" : "Mainnet · delayed"}</span></article>
-        <article><small>{"NETWORK HASH RATE"}</small><strong>{snapshot ? <>{(snapshot.network.hashrate / 1e3).toFixed(2)} <i>kH/s</i></> : connection === "loading" ? <MetricSkeleton /> : "—"}</strong><span>{connection === "loading" ? "Loading live network data" : "Estimated from difficulty and target time"}</span></article>
-        <article><small>{"NETWORK DIFFICULTY"}</small><strong>{snapshot ? difficulty(snapshot.network.difficulty) : connection === "loading" ? <MetricSkeleton /> : "—"}</strong><span>{connection === "loading" ? "Loading live network data" : "Reported by the protocol"}</span></article>
-        <article><small>{"TARGET BLOCK TIME"}</small><strong>{snapshot ? <>{snapshot.network.targetSeconds} <i>{"sec"}</i></> : connection === "loading" ? <MetricSkeleton width="short" /> : "—"}</strong><span>{connection === "loading" ? "Loading live network data" : "Protocol target"}</span></article>
-        <article><small>{"LATEST BLOCK AGE"}</small><strong>{snapshot ? age(snapshot.network.latestBlockTimestamp) : connection === "loading" ? <MetricSkeleton /> : "—"}</strong><span className={snapshot?.network.synced ? "trend" : "warning"}>{connection === "loading" ? "Loading latest block" : snapshot?.network.synced ? "Time since latest block" : "Chain data may be delayed"}</span></article>
-        <article><small>{"SERVICE NODES"}</small><strong>{snapshot ? compact(snapshot.serviceNodes.total) : connection === "loading" ? <MetricSkeleton width="short" /> : "—"}</strong><span>{snapshot ? "Active on mainnet" : connection === "offline" ? "Network data unavailable" : "Loading Service Nodes"}</span></article>
-        <article><small>{"BLOCK SIZE"}</small><strong>{snapshot ? `${bytes(snapshot.network.blockSizeMedian)} / ${bytes(snapshot.network.blockSizeLimit)}` : connection === "loading" ? <MetricSkeleton width="wide" /> : "—"}</strong><span>{connection === "loading" ? "Loading live network data" : "Median / protocol limit"}</span></article>
-        <article><small>{"PROTOCOL VERSION"}</small><strong>{snapshot?.network.protocol ?? (connection === "loading" ? <MetricSkeleton width="wide" /> : "—")}</strong><span>{snapshot ? `Hard fork v${snapshot.network.hardFork}` : connection === "offline" ? "Version unavailable" : "Loading protocol version"}</span></article>
+        <article><small>{"CHAIN HEIGHT"}</small><strong className="block-height">{liveNetwork ? compact(liveNetwork.height) : connection === "loading" ? <MetricSkeleton width="short" /> : "—"}</strong><span className={connection === "offline" ? "offline" : !liveNetwork ? undefined : liveNetwork.synced ? "trend" : "warning"}>{connection === "offline" ? "Network data unavailable" : !liveNetwork ? "Connecting to mainnet" : liveNetwork.synced ? "Mainnet · synced" : "Mainnet · delayed"}</span></article>
+        <article><small>{"NETWORK HASH RATE"}</small><strong>{liveNetwork ? <>{(liveNetwork.hashrate / 1e3).toFixed(2)} <i>kH/s</i></> : connection === "loading" ? <MetricSkeleton /> : "—"}</strong><span>{liveNetwork ? "Estimated from difficulty and target time" : "Loading live network data"}</span></article>
+        <article><small>{"NETWORK DIFFICULTY"}</small><strong>{liveNetwork ? difficulty(liveNetwork.difficulty) : connection === "loading" ? <MetricSkeleton /> : "—"}</strong><span>{liveNetwork ? "Reported by the protocol" : "Loading live network data"}</span></article>
+        <article><small>{"TARGET BLOCK TIME"}</small><strong>{liveNetwork ? <>{liveNetwork.targetSeconds} <i>{"sec"}</i></> : connection === "loading" ? <MetricSkeleton width="short" /> : "—"}</strong><span>{liveNetwork ? "Protocol target" : "Loading live network data"}</span></article>
+        <article><small>{"LATEST BLOCK AGE"}</small><strong>{liveNetwork ? age(liveNetwork.latestBlockTimestamp) : connection === "loading" ? <MetricSkeleton /> : "—"}</strong><span className={connection === "offline" ? "offline" : !liveNetwork ? undefined : liveNetwork.synced ? "trend" : "warning"}>{!liveNetwork ? "Loading latest block" : liveNetwork.synced ? "Time since latest block" : connection === "offline" ? "Latest block unavailable" : "Chain data may be delayed"}</span></article>
+        <article><small>{"SERVICE NODES"}</small><strong>{snapshot ? compact(snapshot.serviceNodes.total) : connection === "offline" ? "—" : <MetricSkeleton width="short" />}</strong><span>{snapshot ? "Active on mainnet" : connection === "offline" ? "Network data unavailable" : "Loading Service Nodes"}</span></article>
+        <article><small>{"BLOCK SIZE"}</small><strong>{liveNetwork ? `${bytes(liveNetwork.blockSizeMedian)} / ${bytes(liveNetwork.blockSizeLimit)}` : connection === "loading" ? <MetricSkeleton width="wide" /> : "—"}</strong><span>{liveNetwork ? "Median / protocol limit" : "Loading live network data"}</span></article>
+        <article><small>{"PROTOCOL VERSION"}</small><strong>{liveNetwork?.protocol ?? (connection === "loading" ? <MetricSkeleton width="wide" /> : "—")}</strong><span>{liveNetwork ? `Hard fork v${liveNetwork.hardFork}` : connection === "offline" ? "Version unavailable" : "Loading protocol version"}</span></article>
       </section>
 
       <section className="tx-type-legend shell" aria-label="Transaction type legend">
@@ -774,14 +823,14 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
         <div className="tx-type-legend-items">{TX_TYPE_LEGEND.map((type) => <TxTypeBadge type={type} key={type} />)}</div>
       </section>
 
-      {Boolean(snapshot?.transactionPool.count) && <section className="stream shell pool-section first-data-section" id="transaction-pool">
+      {Boolean(transactionPool?.available && transactionPool.count) && <section className="stream shell pool-section first-data-section" id="transaction-pool">
         <div className="section-heading pool-heading">
           <div><h2>{"Transaction Pool"}</h2></div>
-          <div className="pool-summary"><i />{`${snapshot!.transactionPool.count} pending`} · {bytes(snapshot!.transactionPool.totalBytes)}</div>
+          <div className="pool-summary"><i />{`${transactionPool!.count} pending`} · {bytes(transactionPool!.totalBytes)}</div>
         </div>
         <div className="table-card pool-table">
           <div className="table-head"><span>{"AGE"}</span><span>{"TRANSACTION HASH"}</span><span>{"TX TYPE"}</span><span>{"FEE / PER KB"}</span><span>{"IN/OUT"}</span><span>{"TX SIZE"}</span></div>
-          {snapshot!.transactionPool.transactions.map((transaction) => (
+          {transactionPool!.transactions.map((transaction) => (
             <div className="table-row transaction-row-link" key={transaction.hash} role="button" tabIndex={0} aria-label={`Open transaction ${transaction.hash}`} onClick={() => openTransaction(transaction.hash, transaction.txType)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openTransaction(transaction.hash, transaction.txType); } }}>
               <span>{transaction.receivedAt > 0 ? age(transaction.receivedAt) : "PENDING"}</span>
               <span className="tx-hash detail-link">{hashPreview(transaction.hash)}</span>
@@ -794,7 +843,7 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
         </div>
       </section>}
 
-      <section className={`stream shell ${snapshot?.transactionPool.count ? "" : "first-data-section"}`}>
+      <section className={`stream shell ${transactionPool?.available && transactionPool.count ? "" : "first-data-section"}`}>
         <div className="section-heading" id="blocks">
           <div><h2>{"Latest Blocks"}</h2></div>
           <PaginationControls page={blockPage} lastPage={snapshot ? Math.floor(snapshot.network.height / blockPageSize) : 0} pageSize={blockPageSize} onPageChange={setBlockPage} onPageSizeChange={(size) => { setBlockPageSize(size); setBlockPage(0); }} onPrefetchPage={(page) => prefetchSnapshot({ blockPage: page })} />
@@ -847,7 +896,7 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
           <article className="stat-command stat-height"><small>{"CHAIN HEIGHT"}</small><strong className="block-height">{snapshot ? compact(snapshot.network.height) : "N/A"}</strong></article>
           <article className="stat-command"><small>{"NETWORK HASH RATE"}</small><strong>{snapshot ? `${(snapshot.network.hashrate / 1e3).toFixed(2)} kH/s` : "N/A"}</strong></article>
           <article className="stat-command"><small>{"NETWORK DIFFICULTY"}</small><strong>{snapshot ? difficulty(snapshot.network.difficulty) : "N/A"}</strong></article>
-          <article className="stat-command"><small>{"PENDING TRANSACTIONS"}</small><strong>{snapshot ? compact(snapshot.transactionPool.count) : "N/A"}</strong></article>
+          <article className="stat-command"><small>{"PENDING TRANSACTIONS"}</small><strong>{transactionPool?.available ? compact(transactionPool.count) : connection === "offline" ? "N/A" : "Loading…"}</strong></article>
         </div>
 
         <div className="statistics-dashboard">
