@@ -89,7 +89,7 @@ test("uses total mined supply for the staking ratio and never fabricates 100 per
   assert.match(worker, /minedSupply: hasCurrentMinedSupply \? minedSupply : null/);
 });
 
-test("keeps the complete primary navigation and places five Service Nodes after quorums", async () => {
+test("keeps the complete primary navigation and groups Statistics after Service Nodes", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const nav = page.slice(page.indexOf('<div className="nav-links">'), page.indexOf("</div>", page.indexOf('<div className="nav-links">')));
   assert.match(nav, /Home/);
@@ -100,6 +100,11 @@ test("keeps the complete primary navigation and places five Service Nodes after 
   assert.match(nav, /Quorums/);
   assert.match(nav, /<a className=\{serviceNodesOnly \? "active" : undefined\} href="\/service-nodes">/);
   assert.match(nav, /<a className=\{statisticsOnly \? "active" : undefined\} href="\/statistics">/);
+  assert.ok(nav.indexOf("Home") < nav.indexOf("Service Nodes"));
+  assert.ok(nav.indexOf("Service Nodes") < nav.indexOf("Statistics"));
+  assert.ok(nav.indexOf("Statistics") < nav.indexOf("Blocks"));
+  assert.ok(nav.indexOf("Blocks") < nav.indexOf("Transactions"));
+  assert.ok(nav.indexOf("Transactions") < nav.indexOf("Quorums"));
   assert.doesNotMatch(page, /import Link from "next\/link"/);
   const quorumIndex = page.indexOf('id="quorums"');
   const homeServiceNodesIndex = page.indexOf('id="home-service-nodes"');
@@ -239,18 +244,25 @@ test("ships a real responsive phone layout and no local font paths", async () =>
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
   ]);
   assert.match(css, /body\{width:auto!important;max-width:100%!important;overflow-x:hidden!important;font-size:16px!important;zoom:1!important\}/);
-  assert.match(css, /\.metrics\{grid-template-columns:1fr!important\}/);
+  assert.match(css, /\.metrics\s*\{\s*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)!important/);
   assert.match(css, /\.nav-links\{display:flex!important;order:3!important;width:100%!important/);
   assert.match(css, /\.table-card\{width:100%!important;max-width:100%!important;overflow-x:auto!important\}/);
   assert.doesNotMatch(layout, /next\/font|\/Users\//);
 });
 
 test("keeps final telemetry labels readable and homepage node headers complete", async () => {
-  const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  const [css, page] = await Promise.all([
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  ]);
   assert.match(css, /\.chain-pulse-panel>header>span\{[^}]*font-size:12px/);
   assert.match(css, /\.pulse-footer\{[^}]*font-size:12px/);
   assert.match(css, /\.home-service-nodes \.nodes-table \.table-head\{[^}]*min-height:72px/);
   assert.match(css, /\.home-service-nodes \.nodes-table \.table-head>\*\{overflow:visible;text-overflow:clip;white-space:normal/);
+  assert.match(css, /\.metrics article > span\.trend,[\s\S]*color:#59f0b7!important/);
+  assert.match(css, /\.metrics article > span\.warning,[\s\S]*color:#f2bf66!important/);
+  assert.match(css, /\.metrics article > span\.offline,[\s\S]*color:#ff858b!important/);
+  assert.match(page, /connection === "offline" \? "offline"/);
 });
 
 test("retries slow live snapshot requests without clearing previously loaded data", async () => {
@@ -277,6 +289,38 @@ test("keeps the primary navigation fixed without covering page content", async (
   assert.match(css, /main\{padding-top:92px\}/);
   assert.match(css, /\.nav\{\s*position:fixed;\s*top:0;\s*left:50%;/);
   assert.match(css, /transform:translateX\(-50%\)/);
+});
+
+test("loads fast network data and verified pool data independently", async () => {
+  const [page, worker] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
+  ]);
+  const chainStart = worker.indexOf("async function chainSnapshot");
+  const chainEnd = worker.indexOf("async function createChainResponse", chainStart);
+  const chain = worker.slice(chainStart, chainEnd);
+
+  assert.match(page, /fetch\("\/api\/network"\)/);
+  assert.match(page, /fetch\("\/api\/transaction-pool"\)/);
+  assert.match(page, /const liveNetwork = snapshot\?\.network \?\? networkPreview\?\.network \?\? null/);
+  assert.match(page, /transactionPool\?\.available \? compact\(transactionPool\.count\)/);
+  assert.match(worker, /async function networkPreviewSnapshot\(\)/);
+  assert.match(worker, /async function transactionPoolSnapshot\(\)/);
+  assert.match(worker, /url\.pathname === "\/api\/network"/);
+  assert.match(worker, /url\.pathname === "\/api\/transaction-pool"/);
+  assert.match(chain, /transactionPool:\s*\{\s*available: false/);
+  assert.doesNotMatch(chain, /get_transaction_pool/);
+});
+
+test("restores every metric separator and strengthens the hero radar", async () => {
+  const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(css, /\.metrics article:nth-of-type\(4n\) \{ border-right:0!important; \}/);
+  assert.match(css, /\.metrics article:nth-of-type\(n\+5\) \{ border-bottom:0!important; \}/);
+  assert.match(css, /\.metrics article:nth-of-type\(even\) \{ border-right:0!important; \}/);
+  assert.match(css, /\.metrics article:nth-of-type\(n\+7\) \{ border-bottom:0!important; \}/);
+  assert.match(css, /rgba\(76,255,201,\.07\)/);
+  assert.match(css, /filter:drop-shadow\(0 0 26px rgba\(45,232,173,\.08\)\)/);
+  assert.match(css, /@media \(prefers-reduced-motion:reduce\) \{ \*,\*:before,\*:after/);
 });
 
 test("keeps the fixed navigation visible above every detail page", async () => {
@@ -392,4 +436,19 @@ test("uses the complete quorum summary row to expand its matrix", async () => {
   assert.doesNotMatch(quorumLedger, /openBlock\(record\.height\)/);
   assert.match(quorumLedger, /EXPAND MATRIX →/);
   assert.match(quorumLedger, /COLLAPSE MATRIX ↑/);
+});
+
+test("mobile ledgers use one value scale across every record column", async () => {
+  const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(css, /--mobile-ledger-value-size:13px/);
+  assert.match(css, /\.table-card \.table-row \.tx-hash,[\s\S]*\.table-card \.table-row \.node-key,[\s\S]*\.detail-output-row code,[\s\S]*\.quorum-key \{[\s\S]*font-size:var\(--mobile-ledger-value-size\)!important/);
+  assert.match(css, /\.table-card \.table-row,[\s\S]*\.quorum-record summary \{[\s\S]*align-items:center!important/);
+});
+
+test("keeps every table heading one visual step above its row values", async () => {
+  const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(css, /--mobile-ledger-heading-size:13\.5px/);
+  assert.match(css, /\.table-card \.table-head,[\s\S]*\.committee-matrix header > \* \{\s*font-size:14px!important;\s*font-weight:650!important/);
+  assert.match(css, /@media \(max-width:900px\) \{[\s\S]*\.committee-matrix header > \* \{\s*font-size:var\(--mobile-ledger-heading-size,13\.5px\)!important/);
+  assert.match(css, /--mobile-ledger-value-size:13px/);
 });
