@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import "./globals.css";
 
+/* eslint-disable @next/next/no-page-custom-font -- the root App Router layout
+   owns this site-wide stylesheet link. */
+
 export const metadata: Metadata = {
   title: "Judecoin Blockchain Explorer",
   description: "Explore live Judecoin blocks, transactions, Service Nodes, staking, and quorum activity.",
@@ -29,7 +32,12 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="en">
       <head>
-        <meta name="viewport" content="width=1280" />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap"
+          rel="stylesheet"
+        />
       </head>
       <body>{children}</body>
     </html>
