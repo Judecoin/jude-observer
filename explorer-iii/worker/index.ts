@@ -249,6 +249,143 @@ async function quorumPageSnapshot(topHeight: number, quorumPage: number, pageSiz
   };
 }
 
+async function transactionPoolSnapshot() {
+  // A mempool is local node state, so one lagging or unhealthy RPC can retain
+  // transactions that the rest of the network no longer sees. Read every
+  // configured node, keep only nodes on the current chain height, and expose
+  // transactions confirmed by a majority of those synchronized nodes.
+  const poolResults = await Promise.allSettled(
+    JUDECOIN_RPC_NODES.map(async (node) => {
+      const [nodeInfo, pool] = await Promise.all([
+        cachedRpcFetchNode(node, "/get_info"),
+        cachedRpcFetchNode(node, "/get_transaction_pool"),
+      ]);
+      return {
+        node,
+        height: Number(nodeInfo.data?.height || 0),
+        status: String(nodeInfo.data?.status || ""),
+        transactions: Array.isArray(pool.data?.transactions) ? pool.data.transactions : [],
+      };
+    }),
+  );
+  const reachablePools = poolResults
+    .flatMap((result) => result.status === "fulfilled" ? [result.value] : [])
+    .filter((candidate) => candidate.status === "OK" && Number.isInteger(candidate.height) && candidate.height > 0);
+  if (!reachablePools.length) throw new Error("No Judecoin transaction pool is reachable");
+  const synchronizedHeight = Math.max(...reachablePools.map((candidate) => candidate.height));
+  const synchronizedPools = reachablePools.filter((candidate) => candidate.height === synchronizedHeight);
+  const observations = new Map<string, { transaction: any; nodes: string[] }>();
+  for (const candidate of synchronizedPools) {
+    for (const transaction of candidate.transactions) {
+      const hash = String(transaction.id_hash || "").toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(hash)) continue;
+      const observation = observations.get(hash) || { transaction, nodes: [] };
+      if (!observation.nodes.includes(candidate.node)) observation.nodes.push(candidate.node);
+      if (String(transaction.tx_json || "").length > String(observation.transaction.tx_json || "").length) {
+        observation.transaction = transaction;
+      }
+      observations.set(hash, observation);
+    }
+  }
+
+  const poolDetails = new Map<string, any>();
+  const validationResults = await Promise.allSettled(synchronizedPools.map(async (candidate) => {
+    const hashes = candidate.transactions
+      .map((transaction: any) => String(transaction.id_hash || "").toLowerCase())
+      .filter((hash: string) => /^[a-f0-9]{64}$/.test(hash));
+    if (!hashes.length) return [];
+    const response = await cachedRpcFetchNode(candidate.node, "/get_transactions", {
+      method: "POST",
+      body: JSON.stringify({ txs_hashes: hashes, decode_as_json: true, tx_extra: true }),
+    });
+    return Array.isArray(response.data?.txs) ? response.data.txs : [];
+  }));
+  for (const result of validationResults) {
+    if (result.status !== "fulfilled") continue;
+    for (const detail of result.value) {
+      const hash = String(detail.tx_hash || "").toLowerCase();
+      if (!observations.has(hash)) continue;
+      if (detail.in_pool !== true || Number(detail.block_height || 0) > 0 || detail.double_spend_seen === true) continue;
+      poolDetails.set(hash, detail);
+    }
+  }
+  const rawPool = [...observations.entries()]
+    .filter(([hash, observation]) => observation.nodes.length >= 2 && poolDetails.has(hash))
+    .map(([, observation]) => observation.transaction);
+  const transactions = rawPool
+    .filter((transaction: any) => /^[a-f0-9]{64}$/.test(String(transaction.id_hash || "")))
+    .sort((a: any, b: any) => Number(b.receive_time || b.last_relayed_time || 0) - Number(a.receive_time || a.last_relayed_time || 0))
+    .slice(0, EXPLORER_PAGE_SIZE)
+    .map((transaction: any) => {
+      const parsed = JSON.parse(transaction.tx_json || "{}");
+      const decoded = poolDetails.get(String(transaction.id_hash || ""));
+      return {
+        hash: String(transaction.id_hash || ""),
+        receivedAt: Number(transaction.receive_time || transaction.last_relayed_time || 0),
+        txType: classifyTransaction(parsed, decoded || transaction),
+        fee: Number(transaction.fee || parsed.rct_signatures?.txnFee || 0),
+        size: Number(transaction.blob_size || transaction.weight || 0),
+        inputs: Array.isArray(parsed.vin) ? parsed.vin.length : 0,
+        outputs: Array.isArray(parsed.vout) ? parsed.vout.length : 0,
+      };
+    })
+    .filter((transaction: { hash: string }) => /^[a-f0-9]{64}$/.test(transaction.hash));
+
+  return {
+    available: true,
+    count: rawPool.length,
+    totalBytes: rawPool.reduce((sum: number, transaction: any) => (
+      sum + Number(transaction.blob_size || transaction.weight || 0)
+    ), 0),
+    transactions,
+  };
+}
+
+async function networkPreviewSnapshot() {
+  const [infoResponse, headerResponse] = await Promise.all([
+    cachedRpcFetch("/get_info"),
+    cachedJsonRpc("get_last_block_header"),
+  ]);
+  const info = infoResponse.data;
+  const header = headerResponse.data?.result?.block_header as RpcHeader | undefined;
+  if (info?.status !== "OK" || !Number.isInteger(info.height) || !header) {
+    throw new Error("Invalid Judecoin network overview response");
+  }
+  const topHeight = Math.max(0, Number(header.height || info.height - 1));
+  const latestBlockTimestamp = Number(header.timestamp || 0);
+  const targetSeconds = Math.max(1, Number(info.target || 180));
+  const latestBlockAgeSeconds = latestBlockTimestamp > 0
+    ? Math.max(0, Math.floor(Date.now() / 1000) - latestBlockTimestamp)
+    : Number.MAX_SAFE_INTEGER;
+  const difficulty = Number(info.difficulty || header.difficulty || 0);
+
+  return {
+    live: true,
+    source: "Judecoin mainnet",
+    node: new URL(infoResponse.node).hostname,
+    fetchedAt: new Date().toISOString(),
+    network: {
+      height: topHeight,
+      difficulty,
+      targetSeconds,
+      hashrate: difficulty / targetSeconds,
+      hardFork: Number(info.hard_fork || header.major_version),
+      protocol: String(info.version || header.major_version),
+      txPoolSize: Number(info.tx_pool_size || 0),
+      blockSizeMedian: Number(info.block_weight_median || info.block_size_median || 0),
+      blockSizeLimit: Number(info.block_weight_limit || info.block_size_limit || 0),
+      coinbase: null,
+      fees: null,
+      minedSupply: null,
+      supplyHeight: null,
+      supplySource: null,
+      latestBlockTimestamp,
+      latestBlockAgeSeconds,
+      synced: latestBlockAgeSeconds <= Math.max(900, targetSeconds * 5),
+    },
+  };
+}
+
 async function chainSnapshot(
   blockPage = 0,
   transactionPage = 0,
@@ -277,106 +414,6 @@ async function chainSnapshot(
   });
   const headers = (headersResponse.data?.result?.headers || []) as RpcHeader[];
   if (!headers.length) throw new Error("Judecoin node returned no block headers");
-
-  let transactionPool: Array<{ hash: string; receivedAt: number; txType: ExplorerTxType; fee: number; size: number; inputs: number; outputs: number }> = [];
-  let transactionPoolTotal = 0;
-  let transactionPoolTotalBytes = 0;
-  try {
-    // A mempool is local node state, so one lagging or unhealthy RPC can retain
-    // transactions that the rest of the network no longer sees. Read every
-    // configured node, keep only nodes on the current chain height, and expose
-    // transactions confirmed by a majority of those synchronized nodes.
-    const poolResults = await Promise.allSettled(
-      JUDECOIN_RPC_NODES.map(async (node) => {
-        const [nodeInfo, pool] = await Promise.all([
-          cachedRpcFetchNode(node, "/get_info"),
-          cachedRpcFetchNode(node, "/get_transaction_pool"),
-        ]);
-        return {
-          node,
-          height: Number(nodeInfo.data?.height || 0),
-          status: String(nodeInfo.data?.status || ""),
-          transactions: Array.isArray(pool.data?.transactions) ? pool.data.transactions : [],
-        };
-      }),
-    );
-    const reachablePools = poolResults
-      .flatMap((result) => result.status === "fulfilled" ? [result.value] : [])
-      .filter((candidate) => candidate.status === "OK" && Number.isInteger(candidate.height) && candidate.height > 0);
-    if (!reachablePools.length) throw new Error("No Judecoin transaction pool is reachable");
-    const synchronizedHeight = Math.max(...reachablePools.map((candidate) => candidate.height));
-    const synchronizedPools = reachablePools.filter((candidate) => candidate.height === synchronizedHeight);
-    const observations = new Map<string, { transaction: any; nodes: string[] }>();
-    for (const candidate of synchronizedPools) {
-      for (const transaction of candidate.transactions) {
-        const hash = String(transaction.id_hash || "").toLowerCase();
-        if (!/^[a-f0-9]{64}$/.test(hash)) continue;
-        const observation = observations.get(hash) || { transaction, nodes: [] };
-        if (!observation.nodes.includes(candidate.node)) observation.nodes.push(candidate.node);
-        // Prefer the richest copy when nodes expose different optional fields.
-        if (String(transaction.tx_json || "").length > String(observation.transaction.tx_json || "").length) {
-          observation.transaction = transaction;
-        }
-        observations.set(hash, observation);
-      }
-    }
-
-    // The pool endpoint can retain a transaction after it has been mined. Ask
-    // each synchronized node to resolve every hash it advertises and keep the
-    // transactions that multiple synchronized nodes advertise and still mark
-    // as genuinely in pool. Single-node records are deliberately withheld to
-    // avoid showing local residue as network-wide pending data.
-    const poolDetails = new Map<string, any>();
-    const validationResults = await Promise.allSettled(synchronizedPools.map(async (candidate) => {
-      const hashes = candidate.transactions
-        .map((transaction: any) => String(transaction.id_hash || "").toLowerCase())
-        .filter((hash: string) => /^[a-f0-9]{64}$/.test(hash));
-      if (!hashes.length) return [];
-      const response = await cachedRpcFetchNode(candidate.node, "/get_transactions", {
-        method: "POST",
-        body: JSON.stringify({ txs_hashes: hashes, decode_as_json: true, tx_extra: true }),
-      });
-      return Array.isArray(response.data?.txs) ? response.data.txs : [];
-    }));
-    for (const result of validationResults) {
-      if (result.status !== "fulfilled") continue;
-      for (const detail of result.value) {
-        const hash = String(detail.tx_hash || "").toLowerCase();
-        if (!observations.has(hash)) continue;
-        if (detail.in_pool !== true || Number(detail.block_height || 0) > 0 || detail.double_spend_seen === true) continue;
-        poolDetails.set(hash, detail);
-      }
-    }
-    const rawPool = [...observations.entries()]
-      .filter(([hash, observation]) => observation.nodes.length >= 2 && poolDetails.has(hash))
-      .map(([, observation]) => observation.transaction);
-    transactionPoolTotal = rawPool.length;
-    transactionPoolTotalBytes = rawPool.reduce((sum: number, transaction: any) => (
-      sum + Number(transaction.blob_size || transaction.weight || 0)
-    ), 0);
-    const visiblePool = rawPool
-      .filter((transaction: any) => /^[a-f0-9]{64}$/.test(String(transaction.id_hash || "")))
-      .sort((a: any, b: any) => Number(b.receive_time || b.last_relayed_time || 0) - Number(a.receive_time || a.last_relayed_time || 0))
-      .slice(0, EXPLORER_PAGE_SIZE);
-
-    transactionPool = visiblePool
-      .map((transaction: any) => {
-        const parsed = JSON.parse(transaction.tx_json || "{}");
-        const decoded = poolDetails.get(String(transaction.id_hash || ""));
-        return {
-          hash: String(transaction.id_hash || ""),
-          receivedAt: Number(transaction.receive_time || transaction.last_relayed_time || 0),
-          txType: classifyTransaction(parsed, decoded || transaction),
-          fee: Number(transaction.fee || parsed.rct_signatures?.txnFee || 0),
-          size: Number(transaction.blob_size || transaction.weight || 0),
-          inputs: Array.isArray(parsed.vin) ? parsed.vin.length : 0,
-          outputs: Array.isArray(parsed.vout) ? parsed.vout.length : 0,
-        };
-      })
-      .filter((transaction: { hash: string }) => /^[a-f0-9]{64}$/.test(transaction.hash));
-  } catch {
-    // A pool lookup failure must not prevent confirmed chain data from loading.
-  }
 
   const blockEndHeight = Math.max(0, topHeight - blockPage * blockPageSize);
   const blockStartHeight = Math.max(0, blockEndHeight - (blockPageSize - 1));
@@ -476,9 +513,10 @@ async function chainSnapshot(
       synced: latestBlockAgeSeconds <= Math.max(900, targetSeconds * 5),
     },
     transactionPool: {
-      count: transactionPoolTotal,
-      totalBytes: transactionPoolTotalBytes,
-      transactions: transactionPool,
+      available: false,
+      count: 0,
+      totalBytes: 0,
+      transactions: [],
     },
     pagination: { blockPage, transactionPage, pageSize: blockPageSize, transactionScanSize },
     blocks: latestBlockHeaders.map((header, index) => {
@@ -926,6 +964,22 @@ const worker = {
         return json(await quorumPageSnapshot(topHeight, quorumPage, pageSize));
       } catch (error) {
         return json({ error: error instanceof Error ? error.message : "Quorum data unavailable" }, 503);
+      }
+    }
+
+    if (url.pathname === "/api/network" && request.method === "GET") {
+      try {
+        return json(await networkPreviewSnapshot());
+      } catch (error) {
+        return json({ live: false, error: error instanceof Error ? error.message : "Network overview unavailable" }, 503);
+      }
+    }
+
+    if (url.pathname === "/api/transaction-pool" && request.method === "GET") {
+      try {
+        return json(await transactionPoolSnapshot());
+      } catch (error) {
+        return json({ available: false, error: error instanceof Error ? error.message : "Transaction pool unavailable" }, 503);
       }
     }
 
