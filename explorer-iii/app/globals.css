@@ -23,7 +23,7 @@ main { min-height:100vh; overflow:clip; position:relative; }
 .nav-links { grid-column:2; justify-self:center; display:flex; gap:44px; color:#a9bbb6; font-size:14px; font-weight:620; }.nav-links a { position:relative; padding:35px 0 34px; transition:color .2s; }.nav-links a:after { content:""; position:absolute; right:50%; bottom:21px; left:50%; height:1px; background:var(--green2); box-shadow:0 0 12px var(--green); transition:left .2s,right .2s; }.nav-links a:hover { color:var(--green2); }.nav-links a:hover:after { right:0; left:0; }
 .node-state { color:#8dfbd3; font:600 10px var(--font-geist-mono); letter-spacing:.12em; border:1px solid var(--line); padding:10px 13px; border-radius:4px; background:rgba(23,81,64,.12); }.node-state i { display:inline-block; width:6px; height:6px; background:#35f2a9; box-shadow:0 0 12px #35f2a9; border-radius:50%; margin-right:8px; }
 .hero { padding:92px 0 86px; text-align:center; max-width:980px; isolation:isolate; }
-.hero:before { content:""; position:absolute; z-index:-1; top:26px; left:50%; width:min(760px,82vw); aspect-ratio:1; transform:translateX(-50%); border-radius:50%; background:repeating-radial-gradient(circle,transparent 0 58px,rgba(76,255,201,.055) 59px 60px),conic-gradient(from 90deg,transparent 0 22%,rgba(65,248,190,.08) 25%,transparent 28% 72%,rgba(65,248,190,.06) 75%,transparent 78%); mask-image:radial-gradient(circle,black 0 46%,transparent 72%); animation:hero-radar 22s linear infinite; }
+.hero:before { content:""; position:absolute; z-index:-1; top:26px; left:50%; width:min(760px,82vw); aspect-ratio:1; transform:translateX(-50%); border-radius:50%; background:repeating-radial-gradient(circle,transparent 0 58px,rgba(76,255,201,.07) 59px 60px),conic-gradient(from 90deg,transparent 0 22%,rgba(65,248,190,.1) 25%,transparent 28% 72%,rgba(65,248,190,.08) 75%,transparent 78%); filter:drop-shadow(0 0 26px rgba(45,232,173,.08)); mask-image:radial-gradient(circle,black 0 46%,transparent 72%); animation:hero-radar 22s linear infinite; }
 .eyebrow,.kicker { color:var(--green); font:650 10px var(--font-geist-mono); letter-spacing:.23em; }.eyebrow span { margin-right:8px; }
 h1 { margin:0 0 30px; font-size:clamp(58px,7.6vw,108px); line-height:.93; letter-spacing:-.065em; font-weight:620; text-shadow:0 10px 50px rgba(0,0,0,.45); } h1 em { color:var(--green2); font-style:normal; font-weight:470; text-shadow:0 0 45px rgba(36,231,162,.22); }
 .hero-copy { max-width:700px; color:#899c98; font-size:16px; line-height:1.75; margin:0 auto 42px; }
@@ -585,7 +585,7 @@ body { font-size:20px; }
 }
 
 /* Portrait-phone layout: preserve every data column while fitting the full
-   explorer inside the viewport. Desktop and tablet presentation is unchanged. */
+   explorer inside the available screen. Desktop and tablet presentation is unchanged. */
 @media (max-width:600px) {
   :root { --record-table-font-size:7px; }
   html,body { width:100%; max-width:100%; overflow-x:hidden; }
@@ -1554,7 +1554,7 @@ main{padding-top:92px}
 @media (max-width:600px){.metric-skeleton{min-height:18px;width:92px}.metric-skeleton-short{width:62px}.metric-skeleton-wide{width:122px}.detail-request-status{top:100px;width:calc(100% - 24px)}.detail-request-card{grid-template-columns:34px minmax(0,1fr) 30px;gap:10px;min-height:62px;padding-left:11px}.detail-request-mark{width:30px;height:30px}.detail-request-copy em{font-size:7.5px}}
 
 /* Service Node ledgers use one typography and complete, readable headings.
-   The fixed desktop viewport above lets phones show this same presentation
+   The fixed desktop layout above lets phones show this same presentation
    proportionally scaled down instead of switching to a separate mobile UI. */
 .decommissioned-live-table .table-row,
 .decommissioned-live-table .table-row > * {
@@ -1583,4 +1583,984 @@ main{padding-top:92px}
 .service-nodes-page .nodes-table .table-head,
 .service-nodes-page .nodes-table .table-row {
   grid-template-columns:minmax(72px,.72fr) minmax(250px,1.8fr) minmax(115px,.82fr) minmax(125px,.86fr) minmax(130px,.9fr) minmax(145px,1fr) minmax(155px,1.08fr) minmax(90px,.62fr);
+}
+
+/* Explorer III v23: high-clarity typography system.
+   Poppins carries the interface hierarchy; the mono stack is reserved for
+   chain identifiers and numeric protocol data. */
+:root {
+  --font-ui:"Poppins",Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
+  --font-data:"SFMono-Regular",Consolas,"Liberation Mono",ui-monospace,monospace;
+  --font-geist-sans:var(--font-ui);
+  --font-geist-mono:var(--font-data);
+  --mono:var(--font-data);
+  --text:#f3fbf8;
+  --text-strong:#f7fffc;
+  --text-secondary:#bdcec8;
+  --text-muted:#99aea7;
+  --label:#afc1bb;
+  --record-table-font-size:14.5px;
+}
+
+html {
+  text-rendering:optimizeLegibility;
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+}
+
+body {
+  color:var(--text);
+  font-family:var(--font-ui);
+  font-weight:400;
+  font-synthesis:none;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family:var(--font-ui);
+}
+
+code,
+pre,
+.tx-hash,
+.block-hash,
+.node-key,
+.quorum-key,
+.quorum-height,
+.height,
+.detail-grid code,
+.detail-section code,
+.detail-inputs code,
+.detail-output-row code,
+.ring-members code {
+  font-family:var(--font-data)!important;
+  font-variant-numeric:tabular-nums;
+  font-feature-settings:"tnum" 1,"zero" 1;
+}
+
+/* Brand and primary navigation */
+.brand {
+  letter-spacing:.07em;
+}
+
+.brand b {
+  color:var(--text-strong);
+  font-family:var(--font-ui);
+  font-size:19px;
+  font-weight:700;
+}
+
+.nav-links,
+.nav-links > a,
+.nav-links > button {
+  color:#b5c5c0;
+  font-family:var(--font-ui)!important;
+  font-size:15px!important;
+  font-weight:600!important;
+  letter-spacing:0!important;
+}
+
+.nav-links > a:hover,
+.nav-links > a:focus-visible,
+.nav-links > a.active,
+.nav-links > button:hover,
+.nav-links > button:focus-visible {
+  color:#8dffe0;
+}
+
+.node-state {
+  color:#9dffdc;
+  font-family:var(--font-ui);
+  font-size:11.5px;
+  font-weight:600;
+  letter-spacing:.08em;
+}
+
+/* Hero and search */
+h1,
+h2,
+h3,
+.section-heading h2,
+.privacy-panel h2,
+.quorum-overview h3,
+.detail-modal h2,
+.detail-page h1,
+.detail-page h2,
+.detail-page h3,
+.stats-panel h2,
+.lifecycle-details h3 {
+  color:var(--text-strong);
+  font-family:var(--font-ui);
+  text-wrap:balance;
+}
+
+h1 {
+  font-weight:700;
+  letter-spacing:-.052em;
+}
+
+h1 em {
+  font-weight:600;
+}
+
+.hero-copy {
+  max-width:760px;
+  color:#b0c2bc!important;
+  font-family:var(--font-ui);
+  font-size:17px;
+  font-weight:400;
+  line-height:1.72;
+}
+
+.eyebrow,
+.kicker,
+.shield-label {
+  color:#67efbd;
+  font-family:var(--font-ui);
+  font-size:11px;
+  font-weight:600;
+  letter-spacing:.1em;
+}
+
+.search input,
+.service-node-search input {
+  color:#edf9f5;
+  font-family:var(--font-ui)!important;
+  font-size:14px!important;
+  font-weight:500!important;
+  letter-spacing:0!important;
+}
+
+.search input::placeholder,
+.service-node-search input::placeholder {
+  color:#839b94;
+  opacity:1;
+}
+
+.search button,
+.service-node-search button {
+  font-family:var(--font-ui)!important;
+  font-size:12px!important;
+  font-weight:700!important;
+  letter-spacing:.065em!important;
+}
+
+.search-message {
+  color:#afc2bc;
+  font-family:var(--font-ui);
+  font-size:13px;
+  font-weight:500;
+}
+
+.privacy-note {
+  color:#9eb3ac;
+}
+
+.privacy-note p {
+  color:#a8bbb5!important;
+  font-family:var(--font-ui);
+  font-size:13px;
+  font-weight:400;
+  line-height:1.65;
+}
+
+.privacy-note b {
+  color:#d4e3de;
+  font-weight:600;
+}
+
+/* Network metrics and overview cards */
+.metrics small,
+.staking-stats small,
+.stat-command small,
+.stats-panel small,
+.quorum-metrics small,
+.stake-total > span,
+.coremap-core small {
+  color:var(--label)!important;
+  font-family:var(--font-ui)!important;
+  font-size:11.5px!important;
+  font-weight:600!important;
+  letter-spacing:.07em!important;
+  line-height:1.4!important;
+}
+
+.metrics strong,
+.staking-stats strong,
+.stat-command strong,
+.quorum-metrics strong,
+.stake-total strong,
+.status-ledger dd,
+.lifecycle-grid strong,
+.lifecycle-count,
+.network-orb strong,
+.coremap-core strong,
+.reactor-value strong {
+  color:#f2fcf8;
+  font-family:var(--font-data)!important;
+  font-weight:700!important;
+  font-variant-numeric:tabular-nums;
+  letter-spacing:-.025em;
+}
+
+.metrics article > span,
+.staking-stats span,
+.stat-command span,
+.quorum-overview > p,
+.quorum-metrics .muted,
+.statistics-hero p,
+.privacy-panel p,
+.status-summary,
+.stake-mini-grid span,
+.protocol-panel dt,
+.lifecycle-grid span {
+  color:#a3b7b0!important;
+  font-family:var(--font-ui);
+  font-weight:400;
+}
+
+.metrics article > span,
+.staking-stats span {
+  font-size:12.5px!important;
+  line-height:1.5;
+}
+
+.section-heading h2 {
+  color:#f7fffc;
+  font-size:36px;
+  font-weight:700;
+  letter-spacing:-.035em;
+}
+
+.section-heading a,
+.section-link {
+  color:#8ffbd5;
+  font-family:var(--font-ui);
+  font-size:12.5px;
+  font-weight:600;
+  letter-spacing:.055em;
+}
+
+.quorum-overview h3 {
+  font-weight:700;
+  letter-spacing:-.035em;
+}
+
+.quorum-overview > p,
+.privacy-panel p,
+.statistics-hero p {
+  color:#a9bcb5!important;
+  font-size:15px;
+  line-height:1.75;
+}
+
+/* Transaction legend */
+.tx-type-legend-title,
+.tx-type-legend-items .tx-type-badge b {
+  color:#b8cac4;
+  font-family:var(--font-ui)!important;
+  font-size:10.5px!important;
+  font-weight:600!important;
+  letter-spacing:.05em!important;
+}
+
+/* All ledgers and data tables */
+.table-head,
+.table-head > *,
+.quorum-ledger-head,
+.committee-matrix header,
+.detail-output-head,
+.ring-head {
+  color:#a9bdb6!important;
+  font-family:var(--font-ui)!important;
+  font-size:11.5px!important;
+  font-weight:600!important;
+  letter-spacing:.055em!important;
+  line-height:1.35!important;
+}
+
+.table-row,
+.table-row > *,
+.quorum-record summary,
+.detail-output-row,
+.detail-output-row > * {
+  color:#bdcec8;
+  font-family:var(--font-ui);
+  font-size:13.5px;
+  font-weight:500;
+  line-height:1.45;
+  letter-spacing:0;
+}
+
+.table-row code,
+.table-row .tx-hash,
+.table-row .block-hash,
+.table-row .node-key,
+.pool-table .tx-hash,
+.quorum-key {
+  color:#c4d4cf!important;
+  font-family:var(--font-data)!important;
+  font-size:12.5px!important;
+  font-weight:500!important;
+  letter-spacing:0!important;
+}
+
+.height,
+.height.detail-link,
+.quorum-height {
+  color:#f4fcf9;
+  font-family:var(--font-data)!important;
+  font-size:13.5px!important;
+  font-weight:700!important;
+}
+
+.link,
+.detail-link {
+  color:#71e9ba;
+  font-weight:600;
+}
+
+.nodes-table .node-active,
+.nodes-table .node-inactive,
+.nodes-table .node-unlocking,
+.deregistered-table .node-deregistered,
+.quorum-record summary > i {
+  font-family:var(--font-ui);
+  font-size:11.5px!important;
+  font-weight:600;
+  letter-spacing:.025em;
+}
+
+.nodes-loading,
+.table-empty,
+.lifecycle-empty,
+.lifecycle-empty span,
+.lifecycle-empty small {
+  color:#9fb3ad;
+  font-family:var(--font-ui);
+  font-size:14px;
+  line-height:1.6;
+}
+
+/* Pagination and utility controls */
+.pager button,
+.page-navigation > span,
+.page-size-control,
+.page-size-control select,
+.pool-summary,
+.service-node-search-count,
+.detail-back-button,
+.lifecycle-action {
+  font-family:var(--font-ui)!important;
+  font-weight:600!important;
+  letter-spacing:.025em!important;
+}
+
+.pager button,
+.page-navigation > span,
+.page-size-control,
+.page-size-control select {
+  color:#a6bbb4;
+  font-size:13px!important;
+}
+
+.pager button:not(:disabled):hover,
+.page-size-control select:focus,
+.detail-back-button:hover {
+  color:#a8ffe3;
+}
+
+.pool-summary,
+.service-node-search-count,
+.detail-back-button,
+.lifecycle-action {
+  font-size:12px!important;
+}
+
+/* Detail pages and modal records */
+.detail-grid small,
+.detail-section dt,
+.detail-inputs dt,
+.detail-page .ring-head > *,
+.input-summary small,
+.detail-request-copy small {
+  color:#a7bbb5!important;
+  font-family:var(--font-ui)!important;
+  font-size:11.5px!important;
+  font-weight:600!important;
+  letter-spacing:.055em!important;
+  line-height:1.35!important;
+}
+
+.detail-grid code,
+.detail-section code,
+.detail-inputs code,
+.detail-output-row code,
+.ring-members code {
+  color:#d6e5e0!important;
+  font-size:13px!important;
+  font-weight:500;
+  line-height:1.6!important;
+}
+
+.detail-modal > p,
+.detail-page p,
+.unlock-estimate-note {
+  color:#a4b7b1!important;
+  font-family:var(--font-ui)!important;
+  font-size:14px!important;
+  font-weight:400!important;
+  line-height:1.7!important;
+  letter-spacing:0!important;
+}
+
+.detail-request-copy strong,
+.detail-request-copy em {
+  font-family:var(--font-ui)!important;
+}
+
+.detail-request-copy strong {
+  font-size:14px;
+  font-weight:600;
+}
+
+.detail-request-copy em {
+  color:#95aaa3;
+  font-size:11px;
+  font-weight:400;
+}
+
+/* Statistics-page supporting text */
+.statistics-page .status-ledger dt,
+.statistics-page .status-summary,
+.statistics-page .status-summary b,
+.statistics-page .stake-scale,
+.statistics-page .stake-scale b,
+.statistics-page .stake-mini-grid span,
+.statistics-page .protocol-panel dt,
+.statistics-page .lifecycle-grid span,
+.statistics-page .lifecycle-action,
+.chain-pulse-panel > header > span,
+.pulse-footer,
+.pulse-footer b {
+  font-family:var(--font-ui)!important;
+}
+
+.statistics-page .status-ledger dt,
+.statistics-page .status-summary,
+.statistics-page .stake-mini-grid span,
+.statistics-page .protocol-panel dt,
+.statistics-page .lifecycle-grid span {
+  color:#a5b9b2!important;
+}
+
+.statistics-page .status-ledger dt {
+  font-size:14px;
+  font-weight:500;
+}
+
+.statistics-page .status-summary,
+.statistics-page .status-summary b,
+.statistics-page .stake-mini-grid span,
+.statistics-page .protocol-panel dt,
+.statistics-page .lifecycle-grid span {
+  font-size:13.5px;
+  line-height:1.55;
+}
+
+.statistics-page .stake-scale,
+.statistics-page .lifecycle-action,
+.chain-pulse-panel > header > span,
+.pulse-footer,
+.pulse-footer b {
+  font-size:12.5px;
+  font-weight:600;
+  letter-spacing:.045em;
+}
+
+.statistics-page .reactor-value span,
+.statistics-page .pulse-tooltip b,
+.statistics-page .pulse-tooltip em,
+.statistics-page .pulse-tooltip small {
+  font-family:var(--font-ui)!important;
+  letter-spacing:.035em;
+}
+
+@media (max-width:900px) {
+  .nav-links,
+  .nav-links > a,
+  .nav-links > button {
+    font-size:14px!important;
+  }
+
+  .section-heading h2 {
+    font-size:34px;
+  }
+
+  .table-row,
+  .table-row > * {
+    font-size:13px;
+  }
+}
+
+@media (max-width:600px) {
+  .hero-copy {
+    font-size:16px;
+  }
+
+  .privacy-note p,
+  .quorum-overview > p,
+  .privacy-panel p,
+  .statistics-hero p {
+    font-size:14px;
+  }
+
+  .table-head,
+  .table-head > * {
+    font-size:11px!important;
+  }
+}
+
+/* Explorer III v24: final interface scale and hybrid phone layout.
+   The interface remains visually consistent with desktop, while dense public
+   ledgers keep readable text and their complete data columns on small screens. */
+.nav {
+  position:fixed;
+  top:0;
+  left:50%;
+  width:min(1240px,calc(100% - 44px));
+  margin-inline:0;
+  transform:translateX(-50%);
+}
+
+.brand b {
+  font-size:20px;
+}
+
+.nav-links,
+.nav-links > a,
+.nav-links > button {
+  font-size:17px!important;
+}
+
+.section-heading h2 {
+  font-size:38px;
+}
+
+.section-heading a,
+.section-link {
+  font-size:13px;
+}
+
+.metrics small,
+.staking-stats small,
+.stat-command small,
+.stats-panel small,
+.quorum-metrics small,
+.stake-total > span,
+.coremap-core small {
+  font-size:12px!important;
+}
+
+/* Live state colors must remain authoritative over neutral typography rules. */
+.metrics article > span.trend,
+.staking-stats span.trend {
+  color:#59f0b7!important;
+  font-weight:500;
+  text-shadow:0 0 16px rgba(89,240,183,.2);
+}
+
+.metrics article > span.warning,
+.staking-stats span.warning {
+  color:#f2bf66!important;
+  font-weight:500;
+  text-shadow:0 0 15px rgba(242,191,102,.16);
+}
+
+.metrics article > span.offline,
+.staking-stats span.offline {
+  color:#ff858b!important;
+  font-weight:500;
+  text-shadow:0 0 15px rgba(255,93,103,.18);
+}
+
+.table-head,
+.table-head > *,
+.quorum-ledger-head,
+.committee-matrix header,
+.detail-output-head,
+.ring-head {
+  font-size:12px!important;
+}
+
+.nodes-table .node-active,
+.nodes-table .node-inactive,
+.nodes-table .node-unlocking,
+.deregistered-table .node-deregistered,
+.quorum-record summary > i,
+.detail-grid small,
+.detail-section dt,
+.detail-inputs dt,
+.detail-page .ring-head > *,
+.input-summary small,
+.detail-request-copy small {
+  font-size:12px!important;
+}
+
+@media (max-width:900px) {
+  html {
+    scroll-padding-top:150px!important;
+  }
+
+  main {
+    padding-top:132px!important;
+  }
+
+  .nav {
+    z-index:60;
+    width:min(calc(100% - 28px),1240px)!important;
+    flex-wrap:wrap!important;
+  }
+
+  .nav-links {
+    padding:0 2px 3px;
+    overflow-x:auto;
+    overscroll-behavior-x:contain;
+    scroll-snap-type:x proximity;
+    -webkit-overflow-scrolling:touch;
+  }
+
+  .nav-links > a,
+  .nav-links > button {
+    flex:0 0 auto;
+    min-height:46px!important;
+    font-size:15.5px!important;
+    scroll-snap-align:start;
+  }
+
+  .detail-page-backdrop {
+    top:132px!important;
+  }
+
+  .detail-page {
+    min-height:calc(100vh - 132px)!important;
+  }
+
+  .table-card,
+  .detail-output-table,
+  .ring-members,
+  .decommissioned-live-table {
+    overscroll-behavior-x:contain;
+    -webkit-overflow-scrolling:touch;
+  }
+}
+
+@media (max-width:600px) {
+  .brand b {
+    font-size:18px!important;
+  }
+
+  .hero-copy {
+    font-size:16px!important;
+  }
+
+  .section-heading h2 {
+    font-size:32px!important;
+  }
+
+  .section-heading a,
+  .section-link {
+    font-size:13px!important;
+  }
+
+  .metrics {
+    grid-template-columns:repeat(2,minmax(0,1fr))!important;
+  }
+
+  .metrics article,
+  .metrics article:nth-child(n) {
+    grid-column:auto!important;
+    min-height:112px!important;
+    padding:20px 16px!important;
+    border-right:1px solid var(--line)!important;
+    border-bottom:1px solid var(--line)!important;
+  }
+
+  .metrics article:nth-child(even) {
+    border-right:0!important;
+  }
+
+  .metrics article:nth-child(7),
+  .metrics article:nth-child(8) {
+    border-bottom:0!important;
+  }
+
+  .metrics small,
+  .staking-stats small,
+  .stat-command small,
+  .stats-panel small,
+  .quorum-metrics small {
+    font-size:11px!important;
+    line-height:1.4!important;
+  }
+
+  .metrics article > span,
+  .staking-stats span {
+    font-size:12px!important;
+  }
+
+  .service-nodes-page .staking-stats,
+  .staking-stats {
+    grid-template-columns:repeat(2,minmax(0,1fr))!important;
+  }
+
+  .staking-stats article,
+  .staking-stats article:last-child {
+    grid-column:auto!important;
+    min-width:0!important;
+    border-right:1px solid var(--line)!important;
+    border-bottom:1px solid var(--line)!important;
+  }
+
+  .staking-stats article:nth-child(even) {
+    border-right:0!important;
+  }
+
+  .staking-stats article:nth-child(n+5) {
+    border-bottom:0!important;
+  }
+
+  .tx-type-legend-title,
+  .tx-type-legend-items .tx-type-badge b {
+    font-size:11px!important;
+  }
+
+  .page-navigation,
+  .page-navigation button,
+  .page-size-control,
+  .page-size-control select {
+    min-height:44px!important;
+    height:44px!important;
+  }
+
+  .page-navigation button,
+  .page-navigation > span,
+  .page-size-control,
+  .page-size-control select {
+    font-size:12px!important;
+  }
+
+  .table-card .table-head,
+  .table-card .table-row {
+    gap:10px!important;
+    padding:0 16px!important;
+  }
+
+  .table-card .table-head {
+    height:auto!important;
+    min-height:58px!important;
+  }
+
+  .table-card .table-head,
+  .table-card .table-head > * {
+    font-size:11.5px!important;
+    line-height:1.25!important;
+  }
+
+  .table-card .table-head > * {
+    overflow:visible!important;
+    text-overflow:clip!important;
+    white-space:normal!important;
+  }
+
+  .table-card .table-row {
+    min-height:72px!important;
+  }
+
+  .table-card .table-row,
+  .table-card .table-row > * {
+    font-size:13px!important;
+    line-height:1.4!important;
+  }
+
+  .table-card .table-head > :first-child,
+  .table-card .table-row > :first-child {
+    position:sticky;
+    left:0;
+    z-index:3;
+    background:#081411;
+    box-shadow:10px 0 18px rgba(2,8,7,.58);
+  }
+
+  .table-card .table-row > :first-child {
+    background:#06100e;
+  }
+
+  .quorum-overview > p,
+  .privacy-panel p,
+  .detail-modal > p,
+  .detail-page p,
+  .unlock-estimate-note {
+    font-size:14px!important;
+  }
+
+  .statistics-hero p {
+    font-size:15px!important;
+  }
+
+  .statistics-page .status-summary,
+  .statistics-page .status-summary b,
+  .statistics-page .stake-mini-grid span,
+  .statistics-page .protocol-panel dt,
+  .statistics-page .lifecycle-grid span {
+    font-size:13px!important;
+  }
+
+  .detail-grid code,
+  .detail-section code,
+  .detail-inputs code,
+  .detail-output-row code,
+  .ring-members code {
+    font-size:12.5px!important;
+  }
+}
+
+/* Explorer III v25: one mobile ledger scale across the complete explorer.
+   Earlier responsive passes assigned different sizes to hashes, heights,
+   statuses, and ordinary values. Keep their semantic colors and typefaces,
+   while making every value in the same record share one visual size, weight,
+   line-height, and vertical alignment. */
+@media (max-width:600px) {
+  :root {
+    --mobile-ledger-heading-size:13.5px;
+    --mobile-ledger-value-size:13px;
+    --mobile-ledger-line-height:1.4;
+  }
+
+  .table-card .table-head,
+  .table-card .table-head > *,
+  .decommissioned-live-table .table-head,
+  .decommissioned-live-table .table-head > *,
+  .detail-output-head,
+  .detail-output-head > *,
+  .ring-head,
+  .ring-head > *,
+  .quorum-ledger-head,
+  .committee-matrix header {
+    font-size:var(--mobile-ledger-heading-size)!important;
+    line-height:1.25!important;
+  }
+
+  .table-card .table-row,
+  .table-card .table-row > *,
+  .table-card .table-row code,
+  .table-card .table-row .detail-link,
+  .table-card .table-row .height,
+  .table-card .table-row .height.detail-link,
+  .table-card .table-row .block-height,
+  .table-card .table-row .tx-hash,
+  .table-card .table-row .block-hash,
+  .table-card .table-row .node-key,
+  .table-card .table-row .node-active,
+  .table-card .table-row .node-inactive,
+  .table-card .table-row .node-unlocking,
+  .table-card .table-row .node-deregistered,
+  .table-card .table-row .unlock-eta b,
+  .table-card .table-row .unlock-eta small,
+  .decommissioned-live-table .table-row,
+  .decommissioned-live-table .table-row > *,
+  .decommissioned-live-table .table-row code,
+  .decommissioned-live-table .table-row .detail-link,
+  .detail-output-row,
+  .detail-output-row > *,
+  .detail-output-row code,
+  .ring-row,
+  .ring-row > *,
+  .ring-row code,
+  .quorum-record summary,
+  .quorum-record summary > *,
+  .quorum-key {
+    font-size:var(--mobile-ledger-value-size)!important;
+    line-height:var(--mobile-ledger-line-height)!important;
+    font-weight:500!important;
+  }
+
+  .table-card .table-row,
+  .decommissioned-live-table .table-row,
+  .detail-output-row,
+  .ring-row,
+  .quorum-record summary {
+    align-items:center!important;
+  }
+
+  .table-card .table-row .node-active,
+  .table-card .table-row .node-inactive,
+  .table-card .table-row .node-unlocking,
+  .table-card .table-row .node-deregistered,
+  .table-card .table-row .height,
+  .table-card .table-row .height.detail-link,
+  .table-card .table-row .block-height,
+  .table-card .table-row .detail-link {
+    font-weight:600!important;
+  }
+}
+
+/* Final metric-grid separator authority. nth-of-type deliberately ignores the
+   visually hidden live-status span before the eight cards. */
+@media (min-width:901px) {
+  .metrics article:nth-of-type(n) {
+    border-right:1px solid var(--line)!important;
+    border-bottom:1px solid var(--line)!important;
+  }
+  .metrics article:nth-of-type(4n) { border-right:0!important; }
+  .metrics article:nth-of-type(n+5) { border-bottom:0!important; }
+}
+
+@media (max-width:900px) {
+  .metrics article:nth-of-type(n) {
+    border-right:1px solid var(--line)!important;
+    border-bottom:1px solid var(--line)!important;
+  }
+  .metrics article:nth-of-type(even) { border-right:0!important; }
+  .metrics article:nth-of-type(n+7) { border-bottom:0!important; }
+}
+
+/* Explorer III v27: table headings sit one visual step above row values on
+   every route. Column widths, row values, semantic colors, and mobile ledger
+   scrolling remain unchanged. */
+.table-card .table-head,
+.table-card .table-head > *,
+.decommissioned-live-table .table-head,
+.decommissioned-live-table .table-head > *,
+.detail-output-head,
+.detail-output-head > *,
+.ring-head,
+.ring-head > *,
+.quorum-ledger-head,
+.quorum-ledger-head > *,
+.committee-matrix header,
+.committee-matrix header > * {
+  font-size:14px!important;
+  font-weight:650!important;
+  line-height:1.3!important;
+}
+
+@media (max-width:900px) {
+  .table-card .table-head,
+  .table-card .table-head > *,
+  .decommissioned-live-table .table-head,
+  .decommissioned-live-table .table-head > *,
+  .detail-output-head,
+  .detail-output-head > *,
+  .ring-head,
+  .ring-head > *,
+  .quorum-ledger-head,
+  .quorum-ledger-head > *,
+  .committee-matrix header,
+  .committee-matrix header > * {
+    font-size:var(--mobile-ledger-heading-size,13.5px)!important;
+    line-height:1.3!important;
+  }
 }
