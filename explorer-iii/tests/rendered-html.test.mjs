@@ -117,6 +117,41 @@ test("keeps the complete primary navigation and groups Statistics after Service 
   assert.match(page, /This panel is hidden automatically when all nodes return to service/);
 });
 
+test("keeps the phone layout contained and readable", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  const mobileAuthority = css.slice(css.indexOf("/* Mobile layout authority."));
+  assert.ok(mobileAuthority.length > 0);
+  assert.match(page, /className="block-size-card"/);
+  assert.match(page, /className="block-size-value"/);
+  assert.match(page, /className="block-size-ratio"/);
+  assert.match(page, /className="block-size-limit"/);
+  assert.match(page, /className="block-size-caption"/);
+  assert.match(page, /Median \/ protocol limit/);
+  assert.match(page, /liveNetwork\.blockSizeMedian \/ liveNetwork\.blockSizeLimit/);
+  assert.match(css, /\.metrics \.block-size-ratio \{/);
+  assert.match(mobileAuthority, /\.nav::before[\s\S]*background:rgba\(3,10,8,\.985\)!important/);
+  assert.match(mobileAuthority, /\.decommissioned-live-heading[\s\S]*grid-template-columns:minmax\(0,1fr\)!important/);
+  assert.match(mobileAuthority, /\.decommissioned-live-table[\s\S]*overflow-x:auto!important/);
+  assert.match(mobileAuthority, /grid-template-areas:[\s\S]*"index height validators"[\s\S]*"workers workers toggle"!important/);
+  assert.match(mobileAuthority, /\.tx-type-legend-items[\s\S]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)!important/);
+  assert.match(mobileAuthority, /\.tx-table \.table-head,[\s\S]*min-width:1160px!important/);
+  assert.match(mobileAuthority, /\.nodes-table \.table-head,[\s\S]*min-width:1630px!important/);
+  assert.match(mobileAuthority, /\.table-card \.table-head > :first-child,[\s\S]*position:static!important/);
+});
+
+test("makes the homepage telemetry animation clearly visible", async () => {
+  const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(css, /\.hero::before \{[\s\S]*hero-radar-pulse/);
+  assert.match(css, /\.hero::after \{[\s\S]*hero-sweep/);
+  assert.match(css, /\.particle-field i \{[\s\S]*hero-particle-drift/);
+  assert.match(css, /@keyframes ambient-one-drift/);
+  assert.match(css, /@keyframes ambient-two-drift/);
+  assert.match(css, /@media \(prefers-reduced-motion:reduce\)/);
+});
+
 test("paginates the Service Node list with 50 rows by default", async () => {
   const [response, page, worker] = await Promise.all([
     render("/service-nodes"),
