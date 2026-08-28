@@ -814,7 +814,12 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
         <article><small>{"TARGET BLOCK TIME"}</small><strong>{liveNetwork ? <>{liveNetwork.targetSeconds} <i>{"sec"}</i></> : connection === "loading" ? <MetricSkeleton width="short" /> : "—"}</strong><span>{liveNetwork ? "Protocol target" : "Loading live network data"}</span></article>
         <article><small>{"LATEST BLOCK AGE"}</small><strong>{liveNetwork ? age(liveNetwork.latestBlockTimestamp) : connection === "loading" ? <MetricSkeleton /> : "—"}</strong><span className={connection === "offline" ? "offline" : !liveNetwork ? undefined : liveNetwork.synced ? "trend" : "warning"}>{!liveNetwork ? "Loading latest block" : liveNetwork.synced ? "Time since latest block" : connection === "offline" ? "Latest block unavailable" : "Chain data may be delayed"}</span></article>
         <article><small>{"SERVICE NODES"}</small><strong>{snapshot ? compact(snapshot.serviceNodes.total) : connection === "offline" ? "—" : <MetricSkeleton width="short" />}</strong><span>{snapshot ? "Active on mainnet" : connection === "offline" ? "Network data unavailable" : "Loading Service Nodes"}</span></article>
-        <article><small>{"BLOCK SIZE"}</small><strong>{liveNetwork ? `${bytes(liveNetwork.blockSizeMedian)} / ${bytes(liveNetwork.blockSizeLimit)}` : connection === "loading" ? <MetricSkeleton width="wide" /> : "—"}</strong><span>{liveNetwork ? "Median / protocol limit" : "Loading live network data"}</span></article>
+        <article className="block-size-card">
+          <div className="block-size-heading"><small>{"BLOCK SIZE"}</small>{liveNetwork && liveNetwork.blockSizeLimit > 0 && <b className="block-size-ratio">{`${((liveNetwork.blockSizeMedian / liveNetwork.blockSizeLimit) * 100).toFixed(1)}%`}</b>}</div>
+          <strong className="block-size-value">{liveNetwork ? bytes(liveNetwork.blockSizeMedian) : connection === "loading" ? <MetricSkeleton width="wide" /> : "—"}</strong>
+          {liveNetwork && <span className="block-size-limit">{`Limit ${bytes(liveNetwork.blockSizeLimit)}`}</span>}
+          <span className="block-size-caption">{liveNetwork ? "Median / protocol limit" : "Loading live network data"}</span>
+        </article>
         <article><small>{"PROTOCOL VERSION"}</small><strong>{liveNetwork?.protocol ?? (connection === "loading" ? <MetricSkeleton width="wide" /> : "—")}</strong><span>{liveNetwork ? `Hard fork v${liveNetwork.hardFork}` : connection === "offline" ? "Version unavailable" : "Loading protocol version"}</span></article>
       </section>
 
