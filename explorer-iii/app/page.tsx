@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import type { DeregistrationSnapshot } from "../worker/deregistration";
 
 type Block = {
   height: number;
@@ -117,14 +118,7 @@ type ChainSnapshot = {
     records: Array<{ height: number; validators: string[]; workers: string[] }>;
     unavailable: string[];
   };
-  deregisteredServiceNodes: {
-    total: number;
-    page: number;
-    pageSize: number;
-    indexedThrough: number;
-    generatedAt: string;
-    nodes: Array<{ publicKey: string; registeredAt: number; unlockedAt: number; contributions: number }>;
-  };
+
 };
 
 type NetworkPreview = Pick<ChainSnapshot, "live" | "source" | "node" | "fetchedAt" | "network">;
@@ -151,8 +145,7 @@ const TX_TYPE_META: Record<string, { label: string; icon?: string }> = {
   decommission: { label: "Decommission", icon: "/tx-types/decommission.png" }, deregistration: { label: "Deregistration", icon: "/tx-types/deregistration.png" },
   "ip-change": { label: "IP Change", icon: "/tx-types/ip-change.png" }, unlock: { label: "Unlock", icon: "/tx-types/unlock.png" },
   "block-reward": { label: "Block Reward", icon: "/tx-types/block-reward.png" },
-  // Never reuse a specific lifecycle icon for an unclassified state change:
-  // that would present a guess (for example, decommission) as a chain fact.
+
   "state-change": { label: "Unclassified State Change" },
 };
 const TX_TYPE_LEGEND = ["block-reward", "transfer", "registration", "contribution", "recommission", "decommission", "deregistration", "ip-change", "unlock"];
@@ -348,6 +341,7 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
   const [quorumPage, setQuorumPage] = useState(0);
   const [serviceNodePage, setServiceNodePage] = useState(0);
   const [deregisteredNodePage, setDeregisteredNodePage] = useState(0);
+  const [deregisteredSnapshot, setDeregisteredSnapshot] = useState<DeregistrationSnapshot | null>(null);
   const [blockPageSize, setBlockPageSize] = useState(5);
   const [transactionPageSize, setTransactionPageSize] = useState(5);
   const [quorumPageSize, setQuorumPageSize] = useState(5);
@@ -386,6 +380,28 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
 
   useEffect(() => {
     let active = true;
+    let timer: number | undefined;
+    const controller = new AbortController();
+    const load = async () => {
+      try {
+        const response = await fetch("/api/deregistered-service-nodes", {
+          cache: "no-store", signal: controller.signal,
+        });
+        if (!response.ok) throw new Error("Deregistration data unavailable");
+        const data = await response.json() as DeregistrationSnapshot;
+        if (active) setDeregisteredSnapshot(data);
+      } catch {
+        if (active) setDeregisteredSnapshot(null);
+      } finally {
+        if (active) timer = window.setTimeout(load, 30_000);
+      }
+    };
+    void load();
+    return () => { active = false; controller.abort(); window.clearTimeout(timer); };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
     const load = async () => {
       void fetchNetworkPreview().then((data) => {
         if (!active) return;
@@ -414,24 +430,26 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
   }, [blockPage, blockPageSize, transactionPage, transactionPageSize, quorumPage, quorumPageSize]);
 
   useEffect(() => {
-    const saved = window.localStorage.getItem("jude-explorer-page-sizes");
-    if (!saved) { setPageSizePreferencesLoaded(true); return; }
     try {
+      const saved = window.localStorage.getItem("jude-explorer-page-sizes");
+      if (!saved) { setPageSizePreferencesLoaded(true); return; }
       const sizes = JSON.parse(saved) as Record<string, number>;
       const valid = (value: number | undefined) => PAGE_SIZE_OPTIONS.includes(value as typeof PAGE_SIZE_OPTIONS[number]) ? value! : 5;
       setBlockPageSize(valid(sizes.blocks));
       setTransactionPageSize(valid(sizes.transactions));
       setQuorumPageSize(valid(sizes.quorums));
-    } catch { /* Ignore an invalid customer preference. */ }
+    } catch { setPageSizePreferencesLoaded(true); return; }
     setPageSizePreferencesLoaded(true);
   }, []);
 
   useEffect(() => {
     if (!pageSizePreferencesLoaded) return;
-    window.localStorage.setItem("jude-explorer-page-sizes", JSON.stringify({
-      blocks: blockPageSize, transactions: transactionPageSize,
-      quorums: quorumPageSize,
-    }));
+    try {
+      window.localStorage.setItem("jude-explorer-page-sizes", JSON.stringify({
+        blocks: blockPageSize, transactions: transactionPageSize,
+        quorums: quorumPageSize,
+      }));
+    } catch { return; }
   }, [pageSizePreferencesLoaded, blockPageSize, transactionPageSize, quorumPageSize]);
 
   const changeQuorumPage = (nextPage: number) => {
@@ -479,17 +497,17 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
   const transactionPool = transactionPoolSnapshot
     ?? (snapshot?.transactionPool.available ? snapshot.transactionPool : null);
   const currentServiceNodeTotal = snapshot?.serviceNodes.total ?? 0;
-  const lockedDeregisteredServiceNodeTotal = snapshot
-    ? snapshot.deregisteredServiceNodes.nodes.filter((node) => node.unlockedAt > snapshot.network.height).length
-    : 0;
-  const statusTotal = currentServiceNodeTotal + lockedDeregisteredServiceNodeTotal;
+  const lockedDeregisteredServiceNodeTotal = deregisteredSnapshot?.live ? deregisteredSnapshot.total : null;
+  const statusTotal = lockedDeregisteredServiceNodeTotal === null ? null : currentServiceNodeTotal + lockedDeregisteredServiceNodeTotal;
   const unlockingServiceNodes = snapshot?.serviceNodes.exiting ?? 0;
   const decommissionedServiceNodes = snapshot?.serviceNodes.decommissioned ?? 0;
-  const activeServiceNodes = snapshot ? Math.max(0, snapshot.serviceNodes.active - unlockingServiceNodes) : 0;
-  const statusShare = (value: number) => statusTotal > 0 ? (value / statusTotal) * 100 : 0;
+  const activeServiceNodes = snapshot?.serviceNodes.nodes.filter((node) => node.active && !node.unlocking).length ?? 0;
+  const otherServiceNodes = Math.max(0, currentServiceNodeTotal - activeServiceNodes - unlockingServiceNodes - decommissionedServiceNodes);
+  const statusShare = (value: number) => statusTotal !== null && statusTotal > 0 ? (value / statusTotal) * 100 : 0;
   const activeEnd = statusShare(activeServiceNodes);
   const unlockingEnd = activeEnd + statusShare(unlockingServiceNodes);
   const offlineEnd = unlockingEnd + statusShare(decommissionedServiceNodes);
+  const deregisteredEnd = offlineEnd + statusShare(lockedDeregisteredServiceNodeTotal ?? 0);
   const minedSupply = snapshot?.network.minedSupply ?? null;
   const stakingRatio = snapshot && minedSupply && minedSupply > 0
     ? (snapshot.serviceNodes.totalContributed / minedSupply) * 100
@@ -520,7 +538,7 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
   useEffect(() => {
     if (serviceNodePage > serviceNodeLastPage) setServiceNodePage(serviceNodeLastPage);
   }, [serviceNodePage, serviceNodeLastPage]);
-  const deregisteredNodes = snapshot?.deregisteredServiceNodes.nodes || [];
+  const deregisteredNodes = deregisteredSnapshot?.nodes || [];
   const deregisteredNodeLastPage = Math.max(0, Math.ceil(deregisteredNodes.length / deregisteredNodePageSize) - 1);
   const paginatedDeregisteredNodes = useMemo(
     () => deregisteredNodes.slice(deregisteredNodePage * deregisteredNodePageSize, (deregisteredNodePage + 1) * deregisteredNodePageSize),
@@ -621,9 +639,7 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
       if (!response.ok) throw new Error(data.error || "Transaction lookup failed");
       const confirmations = Number.isFinite(data.confirmations) ? data.confirmations : snapshot && data.blockHeight ? Math.max(0, snapshot.network.height - data.blockHeight + 1) : 0;
       const feePerKb = data.size > 0 ? data.fee / (data.size / 1000) : 0;
-      // A row already has the classification produced during the same snapshot.
-      // Prefer it so list and detail can never disagree when the live source omits
-      // structured service-node state-change metadata from the detail response.
+
       const transactionType = knownType || data.txType || (data.transactionType === 0 ? "transfer" : "state-change");
       resolveDetailRequest(request.requestId, { title: "Transaction Details", kind: "transaction", fullPage: true, rows: [], sections: [
         { kicker: "IDENTIFIERS", title: "Transaction Identity", rows: [
@@ -908,18 +924,19 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
           <section className="stats-panel node-health-panel">
             <header><div><h2>{"Service Node Status"}</h2></div></header>
             <div className="node-health-content">
-              <div className="status-pie" style={{ background: `conic-gradient(#64ffd0 0 ${activeEnd}%, #5fb8ff ${activeEnd}% ${unlockingEnd}%, #f1b956 ${unlockingEnd}% ${offlineEnd}%, #ef677b ${offlineEnd}% 100%)` }}>
+              <div className="status-pie" style={{ background: statusTotal === null || statusTotal === 0 ? "#233a34" : `conic-gradient(#64ffd0 0 ${activeEnd}%, #5fb8ff ${activeEnd}% ${unlockingEnd}%, #f1b956 ${unlockingEnd}% ${offlineEnd}%, #ef677b ${offlineEnd}% ${deregisteredEnd}%, #738983 ${deregisteredEnd}% 100%)` }}>
                 <i className="pie-grid" /><i className="pie-sweep" />
-                <div className="pie-core"><strong>{snapshot ? compact(statusTotal) : "N/A"}</strong><span>{"TOTAL SHOWN"}</span></div>
+                <div className="pie-core"><strong>{snapshot && statusTotal !== null ? compact(statusTotal) : "N/A"}</strong><span>{"TOTAL SHOWN"}</span></div>
               </div>
               <div className="status-breakdown">
                 <dl className="status-ledger">
                   <div><dt><i className="active-dot" />{"Active"}</dt><dd>{snapshot ? compact(activeServiceNodes) : "N/A"}</dd></div>
                   <div><dt><i className="unlock-dot" />{"Unlocking"}</dt><dd>{snapshot ? compact(unlockingServiceNodes) : "N/A"}</dd></div>
                   <div><dt><i className="offline-dot" />{"Decommissioned"}</dt><dd>{snapshot ? compact(decommissionedServiceNodes) : "N/A"}</dd></div>
-                  <div className="history-entry" title="Deregistered nodes whose stake remains locked on chain"><dt><i className="removed-dot" />{"Deregistered · Stake locked"}</dt><dd>{snapshot ? compact(lockedDeregisteredServiceNodeTotal) : "N/A"}</dd></div>
+                  <div className="history-entry" title="Deregistered nodes whose stake remains locked on chain"><dt><i className="removed-dot" />{"Deregistered · Stake locked"}</dt><dd>{lockedDeregisteredServiceNodeTotal !== null ? compact(lockedDeregisteredServiceNodeTotal) : "N/A"}</dd></div>
+                  {otherServiceNodes > 0 && <div><dt>{"Other current nodes"}</dt><dd>{compact(otherServiceNodes)}</dd></div>}
                 </dl>
-                {snapshot && <p className="status-summary"><b>{compact(currentServiceNodeTotal)}</b>{" current + "}<b>{compact(lockedDeregisteredServiceNodeTotal)}</b>{" deregistered with stake still locked"}</p>}
+                {snapshot && lockedDeregisteredServiceNodeTotal !== null && <p className="status-summary"><b>{compact(currentServiceNodeTotal)}</b>{" current + "}<b>{compact(lockedDeregisteredServiceNodeTotal)}</b>{" deregistered with stake still locked"}</p>}
               </div>
             </div>
           </section>
@@ -966,10 +983,10 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
           <div className="lifecycle-grid">
             <article><TxTypeBadge type="unlock" compact iconOnly /><div><small>{"UNLOCKING"}</small><button className="lifecycle-count" onClick={() => setLifecycleView(lifecycleView === "unlocking" ? null : "unlocking")}>{snapshot ? compact(snapshot.serviceNodes.exiting) : "N/A"}</button><span>{"Nodes scheduled to exit service"}</span><button className="lifecycle-action" onClick={() => setLifecycleView("unlocking")}>View unlocking nodes →</button></div></article>
             <article><TxTypeBadge type="decommission" compact iconOnly /><div><small>{"DECOMMISSIONED"}</small><button className="lifecycle-count" disabled={!decommissionedServiceNodes} onClick={() => setLifecycleView(lifecycleView === "decommissioned" ? null : "decommissioned")}>{snapshot ? compact(snapshot.serviceNodes.decommissioned) : "N/A"}</button><span>{"Funded nodes temporarily inactive"}</span>{decommissionedServiceNodes > 0 ? <button className="lifecycle-action" onClick={() => setLifecycleView("decommissioned")}>View decommissioned nodes →</button> : <em className="lifecycle-action empty">No decommissioned nodes</em>}</div></article>
-            <article><TxTypeBadge type="deregistration" compact iconOnly /><div><small>{"DEREGISTRATION RECORDS"}</small><button className="lifecycle-count" onClick={() => { setLifecycleView(lifecycleView === "deregistered" ? null : "deregistered"); setDeregisteredNodePage(0); }}>{snapshot ? compact(snapshot.deregisteredServiceNodes.total) : "N/A"}</button><span>{snapshot ? `Indexed through block ${compact(snapshot.deregisteredServiceNodes.indexedThrough)}` : "Historical index synchronizing"}</span><button className="lifecycle-action" onClick={() => { setLifecycleView("deregistered"); setDeregisteredNodePage(0); }}>View deregistration records →</button></div></article>
+            <article><TxTypeBadge type="deregistration" compact iconOnly /><div><small>{"DEREGISTERED · STAKE LOCKED"}</small><button className="lifecycle-count" onClick={() => { setLifecycleView(lifecycleView === "deregistered" ? null : "deregistered"); setDeregisteredNodePage(0); }}>{lockedDeregisteredServiceNodeTotal !== null ? compact(lockedDeregisteredServiceNodeTotal) : "N/A"}</button><span>{deregisteredSnapshot?.live ? `Updated at block ${compact(deregisteredSnapshot.sourceHeight!)}` : deregisteredSnapshot?.status === "syncing" ? "Synchronizing deregistered nodes" : "Deregistration data unavailable"}</span><button className="lifecycle-action" onClick={() => { setLifecycleView("deregistered"); setDeregisteredNodePage(0); }}>View deregistered nodes →</button></div></article>
           </div>
           {lifecycleView && <div className="lifecycle-details">
-            <header><div><h3>{lifecycleView === "unlocking" ? "Nodes pending unlock" : lifecycleView === "decommissioned" ? "Temporarily decommissioned nodes" : "Deregistration records"}</h3></div><div className="lifecycle-header-actions">{lifecycleView === "deregistered" && deregisteredNodes.length > 20 && <PaginationControls page={deregisteredNodePage} lastPage={deregisteredNodeLastPage} pageSize={deregisteredNodePageSize} onPageChange={setDeregisteredNodePage} onPageSizeChange={(size) => { setDeregisteredNodePageSize(size); setDeregisteredNodePage(0); }} />}<button onClick={() => setLifecycleView(null)} aria-label={"Close lifecycle details"}>×</button></div></header>
+            <header><div><h3>{lifecycleView === "unlocking" ? "Nodes pending unlock" : lifecycleView === "decommissioned" ? "Temporarily decommissioned nodes" : "Deregistered nodes · Stake locked"}</h3></div><div className="lifecycle-header-actions">{lifecycleView === "deregistered" && deregisteredNodes.length > 20 && <PaginationControls page={deregisteredNodePage} lastPage={deregisteredNodeLastPage} pageSize={deregisteredNodePageSize} onPageChange={setDeregisteredNodePage} onPageSizeChange={(size) => { setDeregisteredNodePageSize(size); setDeregisteredNodePage(0); }} />}<button onClick={() => setLifecycleView(null)} aria-label={"Close lifecycle details"}>×</button></div></header>
             <div className={`table-card ${lifecycleView === "unlocking" ? "unlock-detail-table" : lifecycleView === "decommissioned" ? "decommission-detail-table" : "deregistered-table"}`}>
               {lifecycleView === "unlocking" ? <>
                 <div className="table-head"><span>{"NODE PUBLIC KEY"}</span><span>{"STAKE"}</span><span>{"REGISTERED BLOCK"}</span><span>{"LAST REWARD"}</span><span>{"SCHEDULED UNLOCK BLOCK"}</span><span>{"EST. TIME LEFT"}</span></div>
@@ -983,7 +1000,9 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
                 {snapshot && snapshot.serviceNodes.decommissionedNodes.length === 0 && <div className="lifecycle-empty"><b>0</b><span>{"No service nodes are currently decommissioned."}</span><small>{"This panel will populate automatically when the chain reports a temporarily offline funded node."}</small></div>}
               </> : <>
                 <div className="table-head"><span>{"NODE PUBLIC KEY"}</span><span>{"STAKE STATUS"}</span><span>{"REGISTERED BLOCK"}</span><span>{"STAKE UNLOCK HEIGHT"}</span></div>
-                {paginatedDeregisteredNodes.map((node) => <div className="table-row service-node-row-link" key={`${node.publicKey}-${node.unlockedAt}`} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}><span className="node-key detail-link">{hashPreview(node.publicKey)}</span><span>{snapshot && snapshot.network.height >= node.unlockedAt ? "RELEASED" : "LOCKED"}</span><span className="block-height detail-link">{compact(node.registeredAt)}</span><span className="block-height detail-link">{compact(node.unlockedAt)}</span></div>)}
+                {paginatedDeregisteredNodes.map((node) => <div className="table-row service-node-row-link" key={`${node.publicKey}-${node.unlockedAt}`} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}><span className="node-key detail-link">{hashPreview(node.publicKey)}</span><span>{"LOCKED"}</span><span className="block-height detail-link">{compact(node.registeredAt)}</span><span className="block-height detail-link">{compact(node.unlockedAt)}</span></div>)}
+                {deregisteredNodes.length === 0 && <div className="lifecycle-empty"><span>{deregisteredSnapshot?.live ? "No deregistered nodes have locked stake." : deregisteredSnapshot?.status === "syncing" ? "Synchronizing deregistered nodes…" : "Deregistration data unavailable."}</span></div>}
+
               </>}
             </div>
             {lifecycleView === "unlocking" && snapshot && <p className="unlock-estimate-note">Estimated time is calculated using the current chain height and the {snapshot.network.targetSeconds}-second target block time. Actual unlock timing may vary as blocks are produced.</p>}

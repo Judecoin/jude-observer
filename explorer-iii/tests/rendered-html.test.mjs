@@ -63,15 +63,14 @@ test("renders an accurate statistics command center", async () => {
 
 test("includes deregistration records in the displayed Service Node status total", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  assert.match(page, /lockedDeregisteredServiceNodeTotal = snapshot/);
-  assert.match(page, /node\.unlockedAt > snapshot\.network\.height/);
-  assert.match(page, /statusTotal = currentServiceNodeTotal \+ lockedDeregisteredServiceNodeTotal/);
-  assert.match(page, /activeServiceNodes = snapshot \? Math\.max\(0, snapshot\.serviceNodes\.active - unlockingServiceNodes\)/);
+  assert.match(page, /lockedDeregisteredServiceNodeTotal = deregisteredSnapshot\?\.live/);
+  assert.match(page, /currentServiceNodeTotal \+ lockedDeregisteredServiceNodeTotal/);
+  assert.match(page, /node\.active && !node\.unlocking/);
   assert.match(page, /\{"Deregistered · Stake locked"\}/);
   assert.match(page, /\{"TOTAL SHOWN"\}/);
   assert.match(page, /\{"CURRENT SERVICE NODES"\}/);
   assert.match(page, /deregistered with stake still locked/);
-  assert.match(page, /#ef677b \$\{offlineEnd\}% 100%/);
+  assert.match(page, /#ef677b \$\{offlineEnd\}% \$\{deregisteredEnd\}%/);
   assert.doesNotMatch(page, /Deregistered history/);
   assert.doesNotMatch(page, /<i className="removed-dot" \/>\{"Awaiting contributions"\}/);
 });
@@ -122,7 +121,7 @@ test("keeps the phone layout contained and readable", async () => {
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
-  const mobileAuthority = css.slice(css.indexOf("/* Mobile layout authority."));
+  const mobileAuthority = css.slice(css.lastIndexOf("@media (max-width:600px)"));
   assert.ok(mobileAuthority.length > 0);
   assert.match(page, /className="block-size-card"/);
   assert.match(page, /className="block-size-value"/);
@@ -184,7 +183,7 @@ test("paginates the Service Node list with 50 rows by default", async () => {
   assert.doesNotMatch(worker, /rank\(a\) - rank\(b\)/);
 });
 
-test("paginates deregistration records at 20 rows while fetching the complete history", async () => {
+test("paginates the live deregistration list at 20 rows", async () => {
   const [page, worker] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
@@ -193,7 +192,7 @@ test("paginates deregistration records at 20 rows while fetching the complete hi
   assert.match(page, /paginatedDeregisteredNodes/);
   assert.match(page, /deregisteredNodes\.slice\(deregisteredNodePage \* deregisteredNodePageSize/);
   assert.match(page, /deregisteredNodes\.length > 20/);
-  assert.match(worker, /pageSize: deregisteredHistory\.nodes\.length/);
+  assert.match(worker, /url\.pathname === "\/api\/deregistered-service-nodes"/);
   assert.doesNotMatch(worker, /deregisteredNodes\.slice\(deregisteredNodePage \* deregisteredNodePageSize/);
 });
 
@@ -321,8 +320,8 @@ test("keeps the complete Statistics page typography readable", async () => {
 
 test("keeps the primary navigation fixed without covering page content", async () => {
   const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-  assert.match(css, /main\{padding-top:92px\}/);
-  assert.match(css, /\.nav\{\s*position:fixed;\s*top:0;\s*left:50%;/);
+  assert.match(css, /main\s*\{\s*padding-top:92px;?\s*\}/);
+  assert.match(css, /\.nav\s*\{\s*position:fixed;\s*top:0;\s*left:50%;/);
   assert.match(css, /transform:translateX\(-50%\)/);
 });
 

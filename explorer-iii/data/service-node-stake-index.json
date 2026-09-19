@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "scannedThrough": 849770,
+  "scannedThrough": 866544,
   "registrations": {
     "2cb770fce50f3cd0ddac738d514595c6b9c27dbcd420413cbcd70b0a4b522bc1": 795252,
     "31735b5198c7135ca2cf2e01cf8d074a5d05716c9448bbd4a0736373fa834a0c": 795584,
@@ -478,7 +478,15 @@
     "59a617de713689fafe4fbc678bf5f32cc7a677ba94e1acea3bdd6db0a152dda9": 842054,
     "0254ca48dd5d77d24379774bb17dc950490597926baf75eb8e853b562542ae3e": 843044,
     "88f50c755adacab67be4e1c4db3fbce92f5fc9f3fad97f313bd914921db8344d": 847266,
-    "6bd6ed7004d0a01859f34637b6cb9fa7f1f67f6debc754e61306bcfed3e43021": 848636
+    "6bd6ed7004d0a01859f34637b6cb9fa7f1f67f6debc754e61306bcfed3e43021": 848636,
+    "ad4a889beed13fc4ad5315364db5e06abb21e312342c0a25c0315ca26010094c": 852880,
+    "9cc3548dd94c7d25f139bfd9193c715e8be343fb2c34086d299da90a5589b9e6": 857385,
+    "89071e98584b2c07b5e5138eef6d9d70bbfe84fd58ecfa15a5cee5e9227b16ba": 860859,
+    "cff5e5260889cb026669488516b2892ea5b6b5c872fc75c9b043bc8f7a1454de": 864175,
+    "b836a9e7c8e766336b0e5833101ec9a8ed460e2f91d7d0fb54d481e9e07de809": 864614,
+    "ea8b835c97cc8cda4cb395c66241bd46b097904860125c8732f275bb68eecc15": 864953,
+    "d753011ac8197babc16530084db2f04290e2436bd2db34d5a289e8ccf143937d": 865228,
+    "9e5474006a72593452eb9266ffa4e7f7aba5b56fdd6419a27fb58d147112c4f0": 865991
   },
   "stakes": [
     {
@@ -3208,6 +3216,107 @@
     {
       "keyImage": "fffee3a4f90f70f0365e5bfd4e4d5a49b21f047dfd81de6cf8ce11683b89ddcc",
       "publicKey": "fec47006f61b495c798124eadb9f67aa70d999d4bd333031a1f8e15445539348"
+    },
+    {
+      "keyImage": "5e1c0be3dd6dedfacd0eeb75c7af6ed975aa8a7882bd5a37138e85cf1f0b7054",
+      "publicKey": "ad4a889beed13fc4ad5315364db5e06abb21e312342c0a25c0315ca26010094c"
+    },
+    {
+      "keyImage": "b2fac80f35504c11fd4891e9c97e4588daaea27c49b95cda82352b37c78f1e65",
+      "publicKey": "9cc3548dd94c7d25f139bfd9193c715e8be343fb2c34086d299da90a5589b9e6"
+    },
+    {
+      "keyImage": "78030e1124d73601e14a0561ef211eda068b50efd907ec7bcd5ab6e518242cb9",
+      "publicKey": "89071e98584b2c07b5e5138eef6d9d70bbfe84fd58ecfa15a5cee5e9227b16ba"
+    },
+    {
+      "keyImage": "d903d0df7cd1c2f7e1ccc96526df0209d2613fb04cf828ac5eec5bb7999b3505",
+      "publicKey": "cff5e5260889cb026669488516b2892ea5b6b5c872fc75c9b043bc8f7a1454de"
+    },
+    {
+      "keyImage": "9cfd7d0f6743137185eef693b3c5c4bdc4cad4a770f5d666a6c6e49ec315b428",
+      "publicKey": "b836a9e7c8e766336b0e5833101ec9a8ed460e2f91d7d0fb54d481e9e07de809"
+    },
+    {
+      "keyImage": "93a0e60fd9fb165619fdc761f3fa7a43877ede593c2c7bd758de8c8565bf2a3c",
+      "publicKey": "b836a9e7c8e766336b0e5833101ec9a8ed460e2f91d7d0fb54d481e9e07de809"
+    },
+    {
+      "keyImage": "ad22df8ca9d8a366cbb28c79b75615fef31f62ba0867726e6f06eb29a474dcfb",
+      "publicKey": "ea8b835c97cc8cda4cb395c66241bd46b097904860125c8732f275bb68eecc15"
+    },
+    {
+      "keyImage": "dad7747a0d1919f24940ada1c6311370049ff5ea89f6f2b3657d4d3305ebe537",
+      "publicKey": "ea8b835c97cc8cda4cb395c66241bd46b097904860125c8732f275bb68eecc15"
+    },
+    {
+      "keyImage": "c7e8d4ba0d26ac89f6b57aa6c55105f93c5a65482f9ec451c7966d3cb2494293",
+      "publicKey": "ea8b835c97cc8cda4cb395c66241bd46b097904860125c8732f275bb68eecc15"
+    },
+    {
+      "keyImage": "c4890476c1f78e71d60d72569d476be6ad6fea5f0c88d0c4d57b79322e2abafb",
+      "publicKey": "ea8b835c97cc8cda4cb395c66241bd46b097904860125c8732f275bb68eecc15"
+    },
+    {
+      "keyImage": "3283b38e7b26c22991f557aeed1857856030a57f20863e458a69ccde2a3a9955",
+      "publicKey": "ea8b835c97cc8cda4cb395c66241bd46b097904860125c8732f275bb68eecc15"
+    },
+    {
+      "keyImage": "faadc08f5b446d0bfb864342c80410e4504e8bc7debf6e9afdd4b905d30dd13e",
+      "publicKey": "d753011ac8197babc16530084db2f04290e2436bd2db34d5a289e8ccf143937d"
+    },
+    {
+      "keyImage": "628a6d274a09f59ee44a0a01eadcbda0f014635a0108472213c052b27e3a3dc9",
+      "publicKey": "d753011ac8197babc16530084db2f04290e2436bd2db34d5a289e8ccf143937d"
+    },
+    {
+      "keyImage": "45fa00336e41a1b8a3cc6315f3ada1f3172a1d8acb3cea5804053e33bfe3b5f1",
+      "publicKey": "d753011ac8197babc16530084db2f04290e2436bd2db34d5a289e8ccf143937d"
+    },
+    {
+      "keyImage": "df96e41118191c21b24cb3655ba6e022d22d0e67777a87fcb2cedbca00a5e900",
+      "publicKey": "d753011ac8197babc16530084db2f04290e2436bd2db34d5a289e8ccf143937d"
+    },
+    {
+      "keyImage": "961b2c2843dc642f78d38596ba8835ff63a01deb9efc2a132d300194aba90956",
+      "publicKey": "d753011ac8197babc16530084db2f04290e2436bd2db34d5a289e8ccf143937d"
+    },
+    {
+      "keyImage": "d3c4aef9dbd638464bf2ce085794babe8cadb7d891ffbbd6246ee3ad0d25b812",
+      "publicKey": "d753011ac8197babc16530084db2f04290e2436bd2db34d5a289e8ccf143937d"
+    },
+    {
+      "keyImage": "03e6935aa3e7259eada8469429705be079ebfa13b38cecf4a358730d903296fa",
+      "publicKey": "d753011ac8197babc16530084db2f04290e2436bd2db34d5a289e8ccf143937d"
+    },
+    {
+      "keyImage": "49530a80cc7e5b7a3b35fe3495cf64228989e58bd41d19b5a63d57ebdb65ccac",
+      "publicKey": "d753011ac8197babc16530084db2f04290e2436bd2db34d5a289e8ccf143937d"
+    },
+    {
+      "keyImage": "7b6d9e23df1fef01fcc1eb39f481c6b713f3715b32f645fd558aaab3410ceed6",
+      "publicKey": "d753011ac8197babc16530084db2f04290e2436bd2db34d5a289e8ccf143937d"
+    },
+    {
+      "keyImage": "854a7f8f61d6398fa8b02f7cd265972819b3809e6b14aa3e675d4bf02bf332e1",
+      "publicKey": "9e5474006a72593452eb9266ffa4e7f7aba5b56fdd6419a27fb58d147112c4f0"
+    },
+    {
+      "keyImage": "a7615427069d67c768768146fa460e6dd6c2c2cfd80364cb69dc8f4db9fed7c2",
+      "publicKey": "9e5474006a72593452eb9266ffa4e7f7aba5b56fdd6419a27fb58d147112c4f0"
+    },
+    {
+      "keyImage": "86376e71def734cfd23ad1d244bc082ed095b4c576114b280911cabaecaadb40",
+      "publicKey": "9e5474006a72593452eb9266ffa4e7f7aba5b56fdd6419a27fb58d147112c4f0"
+    },
+    {
+      "keyImage": "8457bf11de62f3329a4bdda31bc6781bfdbdc9ac9b3cfb17356aa87b14720bcc",
+      "publicKey": "9e5474006a72593452eb9266ffa4e7f7aba5b56fdd6419a27fb58d147112c4f0"
+    },
+    {
+      "keyImage": "fd4cc621c0a8584bf6db12597e26db84524c85190cad737b1dfe933deedceb93",
+      "publicKey": "9e5474006a72593452eb9266ffa4e7f7aba5b56fdd6419a27fb58d147112c4f0"
     }
-  ]
+  ],
+  "scannedHash": "b14e309b59a172d4030a3346ca94f7de91e9a4ca492f870bb102a16d2305a7ff"
 }

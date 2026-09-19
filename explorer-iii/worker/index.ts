@@ -1,6 +1,8 @@
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 import deregisteredHistory from "../data/deregistered-service-nodes.json";
+import serviceNodeStakeIndex from "../data/service-node-stake-index.json";
+import { createDeregistrationTracker } from "./deregistration";
 
 interface AssetFetcher {
   fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
@@ -51,10 +53,7 @@ type ExplorerTxType = "block-reward" | "transfer" | "registration" | "contributi
 
 function classifyTransaction(parsed: any, rpcExtra: any = {}): ExplorerTxType {
   const type = Number(parsed?.type || 0);
-  // `get_transactions(..., tx_extra: true)` exposes protocol-decoded metadata
-  // under `extra`.  This is the authoritative classification source.  Do not
-  // infer a semantic state from raw extra bytes: 0x71 is the state-change tag,
-  // not a deregistration code (for example, an IP penalty also starts with it).
+
   const extra = rpcExtra?.extra && typeof rpcExtra.extra === "object" ? rpcExtra.extra : rpcExtra;
   const state = String(extra?.sn_state_change?.type || "").toLowerCase();
   if (state === "dereg" || state === "deregister" || state === "deregistration") return "deregistration";
@@ -62,16 +61,13 @@ function classifyTransaction(parsed: any, rpcExtra: any = {}): ExplorerTxType {
   if (state === "recom" || state === "recomm" || state === "recommission") return "recommission";
   if (state === "ip" || state === "ip-change" || state === "ip_change") return "ip-change";
 
-  // Registration and contribution are encoded as extra fields and can use the
-  // normal transfer transaction type, so they must be checked before type 0.
   if (extra?.sn_registration) return "registration";
   if (extra?.sn_contributor) return "contribution";
   if (type === 2 || extra?.key_image_unlock) return "unlock";
   if (Array.isArray(parsed?.vin) && parsed.vin.some((input: any) => input?.gen)) return "block-reward";
   if (type === 0) return "transfer";
   if (type === 1) return "state-change";
-  // Numeric type 3 alone is not enough to distinguish a service-node action.
-  // Only the decoded structured extra above may assign a specific action.
+
   if (type === 3) return "state-change";
   return "state-change";
 }
@@ -115,7 +111,11 @@ async function rpcFetchNode(node: string, path: string, init?: RequestInit): Pro
       headers: { "content-type": "application/json", ...(init?.headers || {}) },
     });
     if (!response.ok) throw new Error(`RPC HTTP ${response.status}`);
-    return { node, data: await response.json() };
+    const data = await response.json();
+    if (data?.error) throw new Error(data.error.message || "RPC error");
+    if (data?.status && data.status !== "OK") throw new Error(`RPC status: ${data.status}`);
+    if (data?.result?.status && data.result.status !== "OK") throw new Error(`RPC status: ${data.result.status}`);
+    return { node, data };
   } finally {
     clearTimeout(timer);
   }
@@ -199,6 +199,72 @@ function json(data: unknown, status = 200) {
   });
 }
 
+const deregistrationTrackers = new Map<string, ReturnType<typeof createDeregistrationTracker>>();
+
+function deregistrationTracker(origin: string) {
+  const existing = deregistrationTrackers.get(origin);
+  if (existing) return existing;
+  const cache = (globalThis as unknown as { caches?: { default?: EdgeCache } }).caches?.default;
+  const cacheKey = new Request(`${origin}/_internal/stake-index-v2`);
+  const tracker = createDeregistrationTracker(serviceNodeStakeIndex, async () => {
+    let info: RpcResult | undefined;
+    let blacklist: unknown;
+    const nodes = preferredRpcNode ? [preferredRpcNode, ...JUDECOIN_RPC_NODES.filter((node) => node !== preferredRpcNode)] : [...JUDECOIN_RPC_NODES];
+    for (const node of nodes) {
+      try {
+        const candidate = await rpcFetchNode(node, "/get_info");
+        if (candidate.data?.status !== "OK" || !Number.isInteger(candidate.data.height)
+          || candidate.data.height - 1 < serviceNodeStakeIndex.scannedThrough) continue;
+        const response = await rpcFetchNode(node, "/json_rpc", {
+          method: "POST",
+          body: JSON.stringify({ jsonrpc: "2.0", id: "node-lifecycle", method: "get_service_node_blacklisted_key_images", params: {} }),
+        });
+        if (!Array.isArray(response.data?.result?.blacklist)) continue;
+        info = candidate;
+        blacklist = response.data.result.blacklist;
+        preferredRpcNode = node;
+        break;
+      } catch { continue; }
+    }
+    if (!info) throw new Error("Deregistration data unavailable");
+    const sourceNode = info.node;
+    const call = async (method: string, params = {}) => {
+      const response = await rpcFetchNode(sourceNode, "/json_rpc", {
+        method: "POST",
+        body: JSON.stringify({ jsonrpc: "2.0", id: "node-lifecycle", method, params }),
+      });
+      if (!response.data?.result) throw new Error("Invalid node lifecycle response");
+      return response.data.result;
+    };
+    return {
+      height: info.data.height - 1,
+      blacklist: async () => blacklist as Array<{ key_image: string; unlock_height: number }>,
+      headers: async (start: number, end: number) => (await call("get_block_headers_range", {
+        start_height: start, end_height: end, get_tx_hashes: true,
+      })).headers,
+      transactions: async (hashes: string[]) => {
+        const response = await rpcFetchNode(sourceNode, "/get_transactions", {
+          method: "POST",
+          body: JSON.stringify({ txs_hashes: hashes, decode_as_json: true, tx_extra: true, stake_info: true, prune: true }),
+        });
+        return response.data.txs;
+      },
+    };
+  }, cache ? {
+    load: async () => {
+      const response = await cache.match(cacheKey);
+      return response ? response.json() : null;
+    },
+    save: async (value) => {
+      await cache.put(cacheKey, new Response(JSON.stringify(value), {
+        headers: { "content-type": "application/json", "cache-control": "public, max-age=604800" },
+      }));
+    },
+  } : undefined);
+  deregistrationTrackers.set(origin, tracker);
+  return tracker;
+}
+
 function serviceNodeStatesRequest() {
   return cachedJsonRpc("get_service_nodes", {
     fields: {
@@ -250,10 +316,7 @@ async function quorumPageSnapshot(topHeight: number, quorumPage: number, pageSiz
 }
 
 async function transactionPoolSnapshot() {
-  // A mempool is local node state, so one lagging or unhealthy RPC can retain
-  // transactions that the rest of the network no longer sees. Read every
-  // configured node, keep only nodes on the current chain height, and expose
-  // transactions confirmed by a majority of those synchronized nodes.
+
   const poolResults = await Promise.allSettled(
     JUDECOIN_RPC_NODES.map(async (node) => {
       const [nodeInfo, pool] = await Promise.all([
@@ -400,8 +463,7 @@ async function chainSnapshot(
 
   const topHeight = Math.max(0, info.height - 1);
   const emissionSnapshotPromise = cachedRpcFetchNode(JUDECOIN_EMISSION_API, "").catch(() => null);
-  // These independent chain reads start together instead of waiting for the
-  // transaction-pool and block scans to finish first.
+
   const serviceNodesResponsePromise = serviceNodeStatesRequest();
   const quorumSnapshotPromise = quorumPageSnapshot(topHeight, quorumPage, quorumPageSize).catch(() => null);
   const transactionScanSize = Math.max(160, transactionPageSize * 32);
@@ -568,7 +630,7 @@ async function chainSnapshot(
           registeredAt: node.registration_height,
           lastRewardAt: node.last_reward_block_height,
           lastUptimeProof: node.last_uptime_proof,
-          version: node.service_node_version.join("."),
+          version: Array.isArray(node.service_node_version) ? node.service_node_version.join(".") : "",
           unlocking: node.requested_unlock_height > topHeight,
           unlockAt: Number(node.requested_unlock_height || 0),
           contributors: node.contributors?.length || 0,
@@ -603,15 +665,6 @@ async function chainSnapshot(
         })),
     },
     quorums: quorumSnapshot,
-    deregisteredServiceNodes: {
-      total: deregisteredHistory.nodes.length,
-      page: 0,
-      pageSize: deregisteredHistory.nodes.length,
-      indexedThrough: deregisteredHistory.sourceHeight,
-      generatedAt: deregisteredHistory.generatedAt,
-      nodes: deregisteredHistory.nodes
-        .map((node) => ({ ...node })),
-    },
   };
 }
 
@@ -650,7 +703,7 @@ async function refreshChainCache(cache: EdgeCache, cacheKey: Request, url: URL) 
   try {
     await cache.put(cacheKey, stored.clone());
   } catch {
-    // A cache write failure must never block fresh chain data.
+    
   }
   return stored;
 }
@@ -683,6 +736,14 @@ async function cachedChainResponse(request: Request, url: URL, ctx: ExecutionCon
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    if (url.pathname === "/api/deregistered-service-nodes" && request.method === "GET") {
+      const data = await deregistrationTracker(url.origin).read();
+      return new Response(JSON.stringify(data), {
+        status: data.status === "unavailable" ? 503 : 200,
+        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" },
+      });
+    }
 
     if (url.pathname === "/api/block" && request.method === "GET") {
       const id = url.searchParams.get("id") || "";
@@ -757,10 +818,7 @@ const worker = {
         });
         let tx = response.data?.txs?.[0];
         if (!tx) {
-          // A pending transaction may be visible in one node's mempool while
-          // another synchronized node does not return it from get_transactions.
-          // Fall back to the authoritative raw transaction stored by the pool
-          // instead of presenting a false "not found" error to the explorer.
+
           const lookupNodes = [...new Set([
             response.node,
             ...(preferredRpcNode ? [preferredRpcNode] : []),
@@ -774,7 +832,7 @@ const worker = {
                 .find((transaction: any) => String(transaction.id_hash || "").toLowerCase() === hash);
               if (poolTransaction) break;
             } catch {
-              // Continue to the next configured read-only node.
+              
             }
           }
           if (!poolTransaction) return json({ error: "Transaction not found" }, 404);
@@ -839,8 +897,7 @@ const worker = {
               });
             }
           } catch {
-            // Some public nodes intentionally disable get_outs. Absolute indices
-            // remain useful and are returned without inventing member details.
+
           }
         }
         return json({
@@ -906,7 +963,10 @@ const worker = {
         });
         const node = response.data?.result?.service_node_states?.[0];
         if (!node) {
-          const historicalNode = deregisteredHistory.nodes.find((entry) => entry.publicKey === key);
+          const tracker = deregistrationTracker(url.origin);
+          const current = await tracker.read();
+          const historicalNode = tracker.find(key) || deregisteredHistory.nodes.find((entry) => entry.publicKey === key);
+          if (!historicalNode && !current.live) return json({ error: "Service node records are synchronizing" }, 503);
           if (!historicalNode) return json({ error: "Service node not found" }, 404);
           return json({
             type: "service-node",
