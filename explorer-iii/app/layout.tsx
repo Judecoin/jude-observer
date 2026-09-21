@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 import "./globals.css";
 
-/* eslint-disable @next/next/no-page-custom-font -- the root App Router layout
-   owns this site-wide stylesheet link. */
+/* eslint-disable @next/next/no-page-custom-font */
+
 
 export const metadata: Metadata = {
   title: "Judecoin Blockchain Explorer",

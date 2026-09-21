@@ -13,6 +13,28 @@ async function render(path = "/") {
   );
 }
 
+function visibleText(html) {
+  return html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&#x27;|&#39;/gi, "'")
+    .replace(/&amp;/gi, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function sourceEffectContaining(source, marker) {
+  const markerIndex = source.indexOf(marker);
+  assert.ok(markerIndex >= 0, `missing source marker: ${marker}`);
+  const start = source.lastIndexOf("useEffect(() => {", markerIndex);
+  const nextEffect = source.indexOf("useEffect(() => {", markerIndex + marker.length);
+  assert.ok(start >= 0, `missing effect containing: ${marker}`);
+  return source.slice(start, nextEffect >= 0 ? nextEffect : source.length);
+}
+
 test("server-renders the English-only release explorer", async () => {
   const response = await render();
   assert.equal(response.status, 200);
@@ -33,14 +55,55 @@ test("server-renders the English-only release explorer", async () => {
   assert.match(html, /href="\/statistics">Statistics/);
 });
 
+test("server-renders all three routes with numeric zero states and no visible loading placeholders", async () => {
+  for (const path of ["/", "/service-nodes", "/statistics"]) {
+    const response = await render(path);
+    assert.equal(response.status, 200, path);
+    const html = await response.text();
+    const text = visibleText(html);
+    assert.doesNotMatch(text, /\bloading\b|\bN\/A\b|—/i, path);
+    assert.match(text, /\b0\b/, path);
+  }
+});
+
+test("adds live Awaiting Contributions without a permanent loading panel", async () => {
+  const [response, page, worker, css] = await Promise.all([
+    render(),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  const html = await response.text();
+
+  
+  
+  assert.doesNotMatch(html, /Awaiting Contributions/);
+  assert.match(page, /Array\.isArray\(serviceNodes\?\.awaitingNodes\)/);
+  assert.equal((page.match(/awaitingServiceNodeRows\.length > 0/g) || []).length, 2);
+  assert.doesNotMatch(page, /api\/awaiting-service-nodes|Loading live awaiting-contribution data/);
+
+  
+  
+  assert.match(worker, /awaitingNodes: mapAwaitingServiceNodes\(currentServiceNodeStates\)/);
+  assert.match(worker, /\.filter\(\(node\) => !node\.funded\)/);
+  assert.doesNotMatch(worker, /api\/awaiting-service-nodes|AWAITING_CACHE/);
+  assert.match(css, /\.awaiting-live-table \.table-head,[\s\S]*min-width:1910px;[\s\S]*column-gap:16px/);
+  assert.match(css, /\.awaiting-live-table \.table-head \{[\s\S]*min-height:72px/);
+});
+
 test("never server-renders fabricated fallback chain data", async () => {
   const [response, page] = await Promise.all([render(), readFile(new URL("../app/page.tsx", import.meta.url), "utf8")]);
   const html = await response.text();
   assert.doesNotMatch(page, /fallbackBlocks|fallbackTransactions/);
   assert.doesNotMatch(html, /840164|2\.84 kH\/s|4\.82 G/);
-  assert.match(html, /Loading live block data/);
+  assert.match(html, /0 BLOCK RECORDS/);
+  assert.match(html, /0 TRANSACTION RECORDS/);
+  assert.doesNotMatch(visibleText(html), /\bloading\b|\bN\/A\b|—/i);
   assert.doesNotMatch(html, /\bRPC\b/i);
-  assert.match(page, /Live block data is unavailable\. No preview data is shown/);
+  assert.match(page, /const blocks: Block\[\] = snapshot && blocksSelectionMatches \? snapshot\.blocks\.map/);
+  assert.match(page, /const transactions: Transaction\[\] = snapshot && transactionsSelectionMatches \? snapshot\.transactions\.map/);
+  assert.match(page, /\{\(!snapshot \|\| !blocksSelectionMatches\) && <div className="nodes-loading notranslate" translate="no">\{"0 BLOCK RECORDS · No verified snapshot for this page yet"\}<\/div>\}/);
+  assert.match(page, /\{\(!snapshot \|\| !transactionsSelectionMatches\) && <div className="nodes-loading notranslate" translate="no">\{"0 TRANSACTION RECORDS · No verified snapshot for this page yet"\}<\/div>\}/);
 });
 
 test("renders an accurate statistics command center", async () => {
@@ -61,18 +124,18 @@ test("renders an accurate statistics command center", async () => {
   assert.doesNotMatch(html, /emission secured|Quorum trust|UNLOCKED BLOCK|Staking economy/i);
 });
 
-test("includes deregistration records in the displayed Service Node status total", async () => {
+test("uses live current-chain Service Nodes while preserving locked deregistration history", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  assert.match(page, /lockedDeregisteredServiceNodeTotal = deregisteredSnapshot\?\.live/);
-  assert.match(page, /currentServiceNodeTotal \+ lockedDeregisteredServiceNodeTotal/);
-  assert.match(page, /node\.active && !node\.unlocking/);
-  assert.match(page, /\{"Deregistered · Stake locked"\}/);
+  assert.match(page, /statusTotal = currentServiceNodeTotal \+ lockedDeregisteredServiceNodeTotal/);
+  assert.match(page, /activeServiceNodes = serviceNodes\?\.active \?\? 0/);
+  assert.match(page, /serviceNodes\.total - serviceNodes\.funded/);
+  assert.match(page, /\{"Unlocking · included in Active"\}/);
+  assert.match(page, /\{"Awaiting contributions"\}/);
   assert.match(page, /\{"TOTAL SHOWN"\}/);
   assert.match(page, /\{"CURRENT SERVICE NODES"\}/);
-  assert.match(page, /deregistered with stake still locked/);
-  assert.match(page, /#ef677b \$\{offlineEnd\}% \$\{deregisteredEnd\}%/);
-  assert.doesNotMatch(page, /Deregistered history/);
-  assert.doesNotMatch(page, /<i className="removed-dot" \/>\{"Awaiting contributions"\}/);
+  assert.match(page, /unlocking nodes remain included in Active/);
+  assert.match(page, /#ef677b \$\{offlineEnd\}% 100%/);
+  assert.match(page, /Deregistered · Stake locked/);
 });
 
 test("uses total mined supply for the staking ratio and never fabricates 100 percent", async () => {
@@ -80,9 +143,10 @@ test("uses total mined supply for the staking ratio and never fabricates 100 per
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
   ]);
-  assert.match(page, /snapshot\.serviceNodes\.totalContributed \/ minedSupply/);
+  assert.match(page, /serviceNodes\.totalContributed \/ minedSupply/);
   assert.match(page, /% of total mined supply/);
-  assert.match(page, /Total mined supply unavailable/);
+  assert.match(page, /\(stakingRatio \?\? 0\)\.toFixed\(2\)/);
+  assert.match(page, /minedSupply \? atomicJude\(minedSupply\) : "0"/);
   assert.doesNotMatch(page, /fundingProgress|registered Service Node requirement/);
   assert.match(worker, /JUDECOIN_EMISSION_API/);
   assert.match(worker, /minedSupply: hasCurrentMinedSupply \? minedSupply : null/);
@@ -112,7 +176,7 @@ test("keeps the complete primary navigation and groups Statistics after Service 
   assert.match(page, /\.slice\(0, 5\)/);
   assert.match(page, /homepageServiceNodes\.map/);
   assert.match(page, /LAST REWARD BLOCK ↓/);
-  assert.match(page, /Boolean\(snapshot\?\.serviceNodes\.decommissionedNodes\?\.length\)/);
+  assert.match(page, /Boolean\(serviceNodes\?\.decommissionedNodes\.length\)/);
   assert.match(page, /This panel is hidden automatically when all nodes return to service/);
 });
 
@@ -121,10 +185,10 @@ test("keeps the phone layout contained and readable", async () => {
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
-  const mobileAuthority = css.slice(css.lastIndexOf("@media (max-width:600px)"));
+  const mobileAuthority = css.slice(css.indexOf("/* Mobile layout authority."));
   assert.ok(mobileAuthority.length > 0);
   assert.match(page, /className="block-size-card"/);
-  assert.match(page, /className="block-size-value"/);
+  assert.match(page, /className="block-size-value notranslate" translate="no"/);
   assert.match(page, /className="block-size-ratio"/);
   assert.match(page, /className="block-size-limit"/);
   assert.match(page, /className="block-size-caption"/);
@@ -183,7 +247,30 @@ test("paginates the Service Node list with 50 rows by default", async () => {
   assert.doesNotMatch(worker, /rank\(a\) - rank\(b\)/);
 });
 
-test("paginates the live deregistration list at 20 rows", async () => {
+test("server-renders all six Service Node summaries as protected numeric zeros", async () => {
+  const response = await render("/service-nodes");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  const start = html.indexOf('<div class="staking-stats">');
+  const end = html.indexOf("</div>", start);
+  assert.ok(start >= 0 && end > start);
+  const summary = html.slice(start, end + "</div>".length);
+  const values = [...summary.matchAll(/<article(?: class="[^"]*")?><small>([^<]+)<\/small><strong class="notranslate" translate="no">([\s\S]*?)<\/strong>/g)]
+    .map((match) => [match[1], visibleText(match[2])]);
+
+  assert.deepEqual(values, [
+    ["TOTAL SERVICE NODES", "0"],
+    ["ACTIVE NODES", "0"],
+    ["STAKING REQUIREMENT", "0 JUDE"],
+    ["TOTAL STAKED", "0 JUDE"],
+    ["UNLOCKING NODES", "0"],
+    ["DECOMMISSIONED NODES", "0"],
+  ]);
+  assert.equal((summary.match(/class="notranslate" translate="no"/g) || []).length, 6);
+  assert.doesNotMatch(visibleText(summary), /\bloading\b|\bN\/A\b|—/i);
+});
+
+test("paginates deregistration records at 20 rows while fetching the complete history", async () => {
   const [page, worker] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
@@ -192,7 +279,7 @@ test("paginates the live deregistration list at 20 rows", async () => {
   assert.match(page, /paginatedDeregisteredNodes/);
   assert.match(page, /deregisteredNodes\.slice\(deregisteredNodePage \* deregisteredNodePageSize/);
   assert.match(page, /deregisteredNodes\.length > 20/);
-  assert.match(worker, /url\.pathname === "\/api\/deregistered-service-nodes"/);
+  assert.match(worker, /pageSize: deregisteredHistory\.nodes\.length/);
   assert.doesNotMatch(worker, /deregisteredNodes\.slice\(deregisteredNodePage \* deregisteredNodePageSize/);
 });
 
@@ -228,19 +315,26 @@ test("uses live chain data, a constrained emission feed, freshness checks, and p
   assert.match(page, /Staking and Scheduled Unlock/);
   assert.match(page, /Actual wall-clock timing may vary/);
   assert.doesNotMatch(page, /onClick=\{\(\) => openBlock\(node\.unlockAt\)\}/);
+  
+  
   assert.match(page, /if \(inputs == null && outputs == null\) return "N\/A"/);
+  assert.match(page, /return `\$\{inputs \?\? "N\/A"\}\/\$\{outputs \?\? "N\/A"\}`/);
   assert.match(page, /Not detected/);
 });
 
-test("serves fast shared chain snapshots and refreshes them in the background", async () => {
+test("serves the last verified chain snapshot immediately while refreshing it in the background", async () => {
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
-  assert.match(worker, /const CHAIN_CACHE_FRESH_MS = 20_000/);
-  assert.match(worker, /const CHAIN_CACHE_STALE_MS = 90_000/);
-  assert.match(worker, /const CHAIN_CACHE_TTL_SECONDS = 120/);
+  assert.match(worker, /const CHAIN_CACHE_FRESH_MS = 5_000/);
+  assert.match(worker, /const CHAIN_CACHE_STALE_MS = 300_000/);
+  assert.match(worker, /const CHAIN_CACHE_TTL_SECONDS = 600/);
+  assert.match(worker, /snapshot\.network\.height < requestedTip/);
   assert.match(worker, /cache\.match\(cacheKey\)/);
-  assert.match(worker, /ctx\.waitUntil\(refreshChainCache\(cache, cacheKey, url\)/);
   assert.match(worker, /cache\.put\(cacheKey, stored\.clone\(\)\)/);
-  assert.match(worker, /const serviceNodesResponsePromise = serviceNodeStatesRequest\(\)/);
+  assert.match(worker, /return noStoreResponse\(cached\)/);
+  assert.match(worker, /ctx\.waitUntil\(refreshChainCache\(cache, cacheKey, url\)/);
+  assert.match(worker, /const serviceNodesResponsePromise = serviceNodeStatesRequest\(topHeight\)/);
+  assert.match(worker, /get_tx_hashes: true/);
+  assert.match(worker, /Promise\.all\(\[[\s\S]*serviceNodesResponsePromise,[\s\S]*latestBlockDetailsPromise,[\s\S]*transactionDetailsPromise/);
   assert.match(worker, /const quorumSnapshotPromise = quorumPageSnapshot/);
   assert.match(worker, /return cachedChainResponse\(request, url, ctx\)/);
 });
@@ -256,7 +350,7 @@ test("hides unavailable fields across service-node detail states", async () => {
   assert.match(detail, /data\.operatorAddress \? \[\{ label: "OPERATOR ADDRESS"/);
   assert.match(detail, /data\.historical \? \[\] : \[/);
   assert.match(detail, /protocolRows\.length \? \[\{ kicker: "PUBLIC NODE DATA"/);
-  assert.match(detail, /\.\.\.\(snapshot \? \[/);
+  assert.match(detail, /\.\.\.\(serviceNodeHeight > 0 && liveNetwork \? \[/);
   assert.doesNotMatch(detail, /Removed from current RPC state|Not retained in the current historical index|Awaiting current chain height|Awaiting network timing|Never \/ not provided|Node did not provide/);
   assert.match(worker, /publicEndpoint: node\.public_ip \? \[node\.public_ip, node\.quorumnet_port\]\.filter\(Boolean\)\.join\(":"\) : null/);
   assert.doesNotMatch(worker, /publicEndpoint:.*Not published|version:.*Unknown/);
@@ -296,7 +390,8 @@ test("keeps final telemetry labels readable and homepage node headers complete",
   assert.match(css, /\.metrics article > span\.trend,[\s\S]*color:#59f0b7!important/);
   assert.match(css, /\.metrics article > span\.warning,[\s\S]*color:#f2bf66!important/);
   assert.match(css, /\.metrics article > span\.offline,[\s\S]*color:#ff858b!important/);
-  assert.match(page, /connection === "offline" \? "offline"/);
+  assert.match(page, /className="block-height notranslate" translate="no">\{liveNetwork \? compact\(liveNetwork\.height\) : "0"\}/);
+  assert.match(page, /className="notranslate" translate="no">\{compact\(serviceNodes\?\.active \?\? 0\)\}/);
 });
 
 test("retries slow live snapshot requests without clearing previously loaded data", async () => {
@@ -304,7 +399,8 @@ test("retries slow live snapshot requests without clearing previously loaded dat
   assert.match(page, /SNAPSHOT_RETRY_DELAYS_MS = \[0, 1_200, 3_000\]/);
   assert.match(page, /async function fetchSnapshotWithRetry/);
   assert.match(page, /return await fetchSnapshot\(params\)/);
-  assert.match(page, /const data = await fetchSnapshotWithRetry\(params\)/);
+  assert.match(page, /const data = await fetchSnapshotWithRetry\(snapshotParams\(\)\)/);
+  assert.match(page, /const data = await fetchSnapshotWithRetry\(snapshotParams\(\{\}, targetHeight\)\)/);
   assert.doesNotMatch(page, /catch[^}]*setSnapshot\(null\)/s);
 });
 
@@ -320,8 +416,8 @@ test("keeps the complete Statistics page typography readable", async () => {
 
 test("keeps the primary navigation fixed without covering page content", async () => {
   const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-  assert.match(css, /main\s*\{\s*padding-top:92px;?\s*\}/);
-  assert.match(css, /\.nav\s*\{\s*position:fixed;\s*top:0;\s*left:50%;/);
+  assert.match(css, /main\{padding-top:92px\}/);
+  assert.match(css, /\.nav\{\s*position:fixed;\s*top:0;\s*left:50%;/);
   assert.match(css, /transform:translateX\(-50%\)/);
 });
 
@@ -334,16 +430,246 @@ test("loads fast network data and verified pool data independently", async () =>
   const chainEnd = worker.indexOf("async function createChainResponse", chainStart);
   const chain = worker.slice(chainStart, chainEnd);
 
-  assert.match(page, /fetch\("\/api\/network"\)/);
-  assert.match(page, /fetch\("\/api\/transaction-pool"\)/);
-  assert.match(page, /const liveNetwork = snapshot\?\.network \?\? networkPreview\?\.network \?\? null/);
-  assert.match(page, /transactionPool\?\.available \? compact\(transactionPool\.count\)/);
+  assert.match(page, /fetch\("\/api\/network", \{ cache: "no-store" \}\)/);
+  assert.match(page, /fetch\("\/api\/transaction-pool", \{ cache: "no-store" \}\)/);
+  assert.match(page, /const liveNetwork = !networkPreview/);
+  assert.match(page, /\(isProvisionalSnapshot\(snapshot\) && !isProvisionalSnapshot\(networkPreview\)\)/);
+  assert.match(page, /isProvisionalSnapshot\(snapshot\) === isProvisionalSnapshot\(networkPreview\) && isNewerHeightSnapshot\(/);
+  assert.match(page, /snapshot\.network\.height, snapshot\.fetchedAt, networkPreview\.network\.height, networkPreview\.fetchedAt/);
+  assert.match(page, /compact\(transactionPool\?\.available \? transactionPool\.count : 0\)/);
   assert.match(worker, /async function networkPreviewSnapshot\(\)/);
   assert.match(worker, /async function transactionPoolSnapshot\(\)/);
   assert.match(worker, /url\.pathname === "\/api\/network"/);
   assert.match(worker, /url\.pathname === "\/api\/transaction-pool"/);
+  assert.match(worker, /const NETWORK_CACHE_FRESH_MS = 3_000/);
+  assert.match(worker, /const TRANSACTION_POOL_CACHE_FRESH_MS = 5_000/);
+  assert.match(worker, /return cachedNetworkLiveResponse\(url, ctx\)/);
+  assert.match(worker, /return cachedTransactionPoolLiveResponse\(url, ctx\)/);
   assert.match(chain, /transactionPool:\s*\{\s*available: false/);
   assert.doesNotMatch(chain, /get_transaction_pool/);
+});
+
+test("loads and preserves verified testing-quorum data independently", async () => {
+  const [response, page, worker] = await Promise.all([
+    render(),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
+  ]);
+  const html = await response.text();
+  const quorumSection = page.slice(page.indexOf('<section className="quorum-section'), page.indexOf('<section className="staking home-service-nodes'));
+
+  assert.match(page, /fetch\(`\/api\/quorums\?\$\{params\}`/);
+  assert.match(page, /else if \(quorumPage === 0\) params\.set\("latest", "1"\)/);
+  assert.match(page, /Math\.min\(10000, Math\.floor\(liveNetwork\.height \/ quorumPageSize\)\)/);
+  assert.match(page, /setQuorumLiveSnapshot/);
+  assert.match(page, /Never replace the last verified quorum with an empty or failed read/);
+  assert.match(page, /quorumRefreshRef\.current\?\.\(\)/);
+  assert.match(page, /const QUORUM_REFRESH_DELAY_MS = 5_000/);
+  assert.match(quorumSection, /className="notranslate" translate="no">\{latestQuorum\?\.validators\.length \?\? 0\}/);
+  assert.match(quorumSection, /latestQuorum \? compact\(latestQuorum\.height\) : "0"/);
+  assert.match(quorumSection, /quorums\?\.truncated/);
+  assert.match(quorumSection, /Older quorum history exists\. Select a larger page size to reach earlier heights\./);
+  assert.doesNotMatch(quorumSection, /Loading live quorum data|"N\/A"/);
+  assert.match(html, /0 QUORUM RECORDS/);
+
+  assert.match(worker, /const QUORUM_CACHE_FRESH_MS = 15_000/);
+  assert.match(worker, /const MAX_QUORUM_PAGE = 10_000/);
+  assert.match(worker, /function requestedQuorumPage\(url: URL\)/);
+  assert.match(worker, /truncated: quorumPage >= MAX_QUORUM_PAGE && protocolHasOlder/);
+  assert.match(worker, /const MAX_QUORUM_TIP = 100_000_000/);
+  assert.match(worker, /function requestedQuorumTip\(url: URL\)/);
+  assert.match(worker, /Number\.isSafeInteger\(tip\)/);
+  assert.match(worker, /const RPC_CACHE_MAX_ENTRIES = 200/);
+  assert.match(worker, /rpcResponseCache\.size >= RPC_CACHE_MAX_ENTRIES/);
+  assert.match(worker, /result\?\.status !== "OK" \|\| result\.untrusted !== false/);
+  assert.match(worker, /Incomplete Judecoin testing-quorum record/);
+  assert.match(worker, /Promise\.any\(JUDECOIN_RPC_NODES\.map/);
+  assert.match(worker, /parsed\.records\.length === expectedCount/);
+  assert.match(worker, /record\.height === expectedEndHeight - index/);
+  assert.match(worker, /async function latestQuorumSnapshot/);
+  assert.match(worker, /verifiedTestingQuorumRequest\(\{\}, 1\)/);
+  assert.match(worker, /path: `\/api\/quorums\?page=\$\{quorumPage\}&pageSize=\$\{pageSize\}\$\{latestOnly/);
+  assert.match(worker, /`&tip=\$\{requestedTip\}`/);
+  assert.match(worker, /return cachedQuorumLiveResponse\(url, ctx\)/);
+});
+
+test("refreshes every live feed without overlapping requests or clearing good data", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /const NETWORK_REFRESH_DELAY_MS = 2_000/);
+  assert.match(page, /const TRANSACTION_POOL_REFRESH_DELAY_MS = 5_000/);
+  assert.match(page, /const SERVICE_NODE_REFRESH_DELAY_MS = 15_000/);
+  assert.match(page, /const SERVICE_NODE_CATCH_UP_RETRY_DELAY_MS = 5_000/);
+  assert.match(page, /const HIDDEN_TAB_REFRESH_DELAY_MS = 30_000/);
+  assert.match(page, /window\.setTimeout\(refreshNetwork, NETWORK_REFRESH_DELAY_MS\)/);
+  assert.match(page, /window\.setTimeout\(refreshTransactionPool, TRANSACTION_POOL_REFRESH_DELAY_MS\)/);
+  assert.match(page, /let nextDelay = SERVICE_NODE_REFRESH_DELAY_MS/);
+  assert.match(page, /window\.setTimeout\(refreshServiceNodes, delay\)/);
+  assert.match(page, /nextDelay = TRANSACTION_POOL_REFRESH_DELAY_MS/);
+  assert.match(page, /const endpoint = tip > 0 \? `\/api\/service-nodes-live\?tip=\$\{tip\}` : "\/api\/service-nodes-live"/);
+  assert.match(page, /fetch\(endpoint, \{ cache: "no-store"/);
+  assert.match(page, /data\.height < highestKnownHeightRef\.current[\s\S]*SERVICE_NODE_CATCH_UP_RETRY_DELAY_MS/);
+  assert.match(page, /if \(!active \|\| inFlight\) return/);
+  assert.match(page, /if \(inFlight\) \{[\s\S]*refreshQueued = true/);
+  assert.match(page, /serviceNodeRefreshRef\.current = requestRefresh/);
+  assert.match(page, /data\.network\.height > previousHeight\) \{[\s\S]*serviceNodeRefreshRef\.current\?\.\(\);[\s\S]*quorumRefreshRef\.current\?\.\(\);[\s\S]*\}/);
+  assert.match(page, /document\.addEventListener\("visibilitychange", resume\)/);
+  assert.match(page, /params\.set\("tip", String\(tip\)\)/);
+  assert.match(page, /const knownChainHeight = Math\.max\(\s*isProvisionalSnapshot\(networkPreview\) \? 0 : networkPreview\?\.network\.height \?\? 0,\s*isProvisionalSnapshot\(snapshot\) \? 0 : snapshot\?\.network\.height \?\? 0,\s*isProvisionalSnapshot\(serviceNodesLive\) \? 0 : serviceNodesLive\?\.height \?\? 0,\s*\)/);
+  assert.match(page, /data\.network\.height < previousHeight/);
+  assert.doesNotMatch(page, /throw new Error\("Stale Service Node data"\)/);
+  assert.match(page, /function isNewerHeightSnapshot/);
+  assert.doesNotMatch(page, /setInterval|clearInterval|networkPreviewCache|transactionPoolCache/);
+  assert.doesNotMatch(page, /setSnapshot\(null\)|setNetworkPreview\(null\)|setTransactionPoolSnapshot\(null\)|setServiceNodesLive\(null\)/);
+});
+
+test("serves one strict real-time Service Node definition with private browser caching", async () => {
+  const [page, worker] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
+  ]);
+  const builderStart = worker.indexOf("function buildServiceNodesSnapshot");
+  const builderEnd = worker.indexOf("async function serviceNodesLiveSnapshot", builderStart);
+  const builder = worker.slice(builderStart, builderEnd);
+  assert.match(worker, /url\.pathname === "\/api\/service-nodes-live"/);
+  assert.equal((worker.match(/serviceNodes: buildServiceNodesSnapshot\(currentServiceNodeStates, topHeight\)/g) || []).length, 1);
+  assert.equal((worker.match(/serviceNodes: buildServiceNodesSnapshot\(currentServiceNodeStates, serviceNodeTopHeight\)/g) || []).length, 1);
+  assert.match(worker, /if \(!Array\.isArray\(serviceNodeStates\)\)/);
+  assert.match(worker, /const SERVICE_NODES_CACHE_FRESH_MS = 5_000/);
+  assert.match(worker, /const SERVICE_NODES_CACHE_STALE_MS = 300_000/);
+  assert.match(worker, /body\.includes\('"method":"get_service_nodes"'\) \? 35_000 : 15_000/);
+  assert.match(worker, /topHeight < Number\(requestedTip\)/);
+  assert.match(worker, /path: "\/api\/service-nodes-live"/);
+  assert.match(worker, /Promise\.any\(JUDECOIN_RPC_NODES\.map/);
+  assert.match(worker, /Promise\.all\(\[[\s\S]*rpcFetchNode\(node, "\/get_info", undefined, 35_000\)[\s\S]*rpcFetchNode\(node, "\/json_rpc", init\)/);
+  assert.match(worker, /info\?\.mainnet !== true \|\| info\?\.nettype !== "mainnet"/);
+  assert.match(worker, /minimumHeight: Number\.isInteger\(requestedTip\)/);
+  assert.match(worker, /createServiceNodesLiveResponse\(new URL\(url\.toString\(\)\)\)/);
+  assert.match(worker, /serviceNodesHeight: serviceNodeTopHeight/);
+  assert.match(worker, /return noStoreResponse\(stored\)/);
+  assert.match(worker, /return cachedServiceNodesLiveResponse\(url, ctx\)/);
+  assert.match(builder, /active: currentServiceNodeStates\.filter\(\(node\) => node\.active\)\.length/);
+  assert.match(builder, /active: node\.active/);
+  assert.doesNotMatch(builder, /Boolean\(node\.active\)|loading/i);
+  assert.match(page, /const chainServiceNodesSnapshot: ServiceNodesLiveSnapshot \| null = snapshot \? \{/);
+  assert.match(page, /const selectedServiceNodesSnapshot = !serviceNodesLive[\s\S]*isNewerHeightSnapshot\([\s\S]*chainServiceNodesSnapshot\.height[\s\S]*serviceNodesLive\.height/);
+  assert.match(page, /const serviceNodes = selectedServiceNodesSnapshot\?\.serviceNodes \?\? null/);
+  assert.match(page, /const serviceNodeHeight = selectedServiceNodesSnapshot\?\.height \?\? 0/);
+  assert.match(page, /compact\(serviceNodes\?\.active \?\? 0\)[\s\S]*\{"Active on mainnet"\}/);
+  assert.doesNotMatch(page, /Loading Service Nodes|Loading live Service Node data|Loading nodes/);
+  assert.doesNotMatch(page, /\b439\b|\b440\b/);
+  assert.doesNotMatch(worker, /\bactive:\s*439\b|\btotal:\s*440\b/);
+});
+
+test("selects the trusted newest complete Service Node snapshot and keeps its matching height", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const start = page.indexOf("const chainServiceNodesSnapshot:");
+  const end = page.indexOf("const selectedLiveQuorums", start);
+  assert.ok(start >= 0 && end > start);
+  const selection = page.slice(start, end);
+
+  assert.match(selection, /height: snapshot\.serviceNodesHeight/);
+  assert.match(selection, /serviceNodes: snapshot\.serviceNodes/);
+  assert.match(selection, /if \(chainServiceNodesSnapshot && isProvisionalSnapshot\(snapshot\)\) provisionalClientSnapshots\.add\(chainServiceNodesSnapshot\)/);
+  assert.match(selection, /const selectedServiceNodesSnapshot = !serviceNodesLive/);
+  assert.match(selection, /!chainServiceNodesSnapshot \|\| \(isProvisionalSnapshot\(chainServiceNodesSnapshot\) && !isProvisionalSnapshot\(serviceNodesLive\)\)/);
+  assert.match(selection, /isProvisionalSnapshot\(chainServiceNodesSnapshot\) === isProvisionalSnapshot\(serviceNodesLive\) && isNewerHeightSnapshot\(/);
+  assert.match(selection, /chainServiceNodesSnapshot\.height, chainServiceNodesSnapshot\.fetchedAt,[\s\S]*serviceNodesLive\.height, serviceNodesLive\.fetchedAt/);
+  assert.match(selection, /\? serviceNodesLive : chainServiceNodesSnapshot/);
+  assert.match(selection, /const serviceNodes = selectedServiceNodesSnapshot\?\.serviceNodes \?\? null/);
+  assert.match(page, /const serviceNodeHeight = selectedServiceNodesSnapshot\?\.height \?\? 0/);
+  assert.doesNotMatch(selection, /serviceNodesLive\?\.serviceNodes \?\? snapshot\?\.serviceNodes/);
+});
+
+test("restores only validated snapshots and never clears verified data after refresh failures", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const serviceValidatorStart = page.indexOf("function isValidServiceNodesSnapshot");
+  const serviceValidatorEnd = page.indexOf("function isValidNetworkPreview", serviceValidatorStart);
+  const serviceValidator = page.slice(serviceValidatorStart, serviceValidatorEnd);
+  const networkValidatorStart = serviceValidatorEnd;
+  const networkValidatorEnd = page.indexOf("function isValidQuorumSnapshot", networkValidatorStart);
+  const networkValidator = page.slice(networkValidatorStart, networkValidatorEnd);
+  const readSnapshotStart = page.indexOf("function readClientSnapshot");
+  const readSnapshotEnd = page.indexOf("function writeClientSnapshot", readSnapshotStart);
+  const readSnapshot = page.slice(readSnapshotStart, readSnapshotEnd);
+  const fetchNetworkStart = page.indexOf("async function fetchNetworkPreview");
+  const fetchNetworkEnd = page.indexOf("async function fetchTransactionPool", fetchNetworkStart);
+  const fetchNetwork = page.slice(fetchNetworkStart, fetchNetworkEnd);
+  const serviceRefresh = sourceEffectContaining(page, "const refreshServiceNodes = async () => {");
+
+  assert.match(page, /const CLIENT_SNAPSHOT_MAX_CHARS = 2_500_000/);
+  assert.match(page, /const CLIENT_SNAPSHOT_MAX_AGE_MS = 6 \* 60 \* 60 \* 1_000/);
+  assert.match(page, /const CLIENT_SNAPSHOT_FUTURE_SKEW_MS = 60_000/);
+  assert.match(page, /const CLIENT_SERVICE_NODES_SNAPSHOT_KEY = "judecoin:verified-service-nodes:v1"/);
+  assert.match(readSnapshot, /window\.localStorage\.getItem\(key\)/);
+  assert.match(readSnapshot, /raw\.length > CLIENT_SNAPSHOT_MAX_CHARS/);
+  assert.match(readSnapshot, /if \(!validate\(parsed\)\) return null/);
+  assert.match(readSnapshot, /const ageMs = Date\.now\(\) - timestamp/);
+  assert.match(readSnapshot, /ageMs > CLIENT_SNAPSHOT_MAX_AGE_MS/);
+  assert.match(readSnapshot, /ageMs < -CLIENT_SNAPSHOT_FUTURE_SKEW_MS/);
+  assert.match(readSnapshot, /!isNonNegativeInteger\(height\) \|\| height > 100_000_000/);
+  assert.match(readSnapshot, /provisionalClientSnapshots\.add\(parsed as object\)/);
+  assert.match(readSnapshot, /return parsed/);
+  assert.match(page, /window\.localStorage\.setItem\(key, serialized\)/);
+  assert.match(serviceValidator, /snapshot\?\.live !== true/);
+  assert.match(serviceValidator, /Number\.isFinite\(Date\.parse\(snapshot\.fetchedAt\)\)/);
+  assert.match(serviceValidator, /counts\.every\(isNonNegativeInteger\)/);
+  assert.match(serviceValidator, /nodes\.nodes\.length === nodes\.total/);
+  assert.match(serviceValidator, /Array\.isArray\(nodes\.awaitingNodes\)/);
+  assert.match(serviceValidator, /Array\.isArray\(nodes\.unlockingNodes\)/);
+  assert.match(serviceValidator, /Array\.isArray\(nodes\.decommissionedNodes\)/);
+  assert.match(networkValidator, /snapshot\?\.live === true/);
+  assert.match(networkValidator, /Number\.isFinite\(Date\.parse\(snapshot\.fetchedAt\)\)/);
+  assert.match(networkValidator, /isNonNegativeInteger\(snapshot\.network\?\.height\)/);
+  assert.match(networkValidator, /Number\.isFinite\(snapshot\.network\?\.difficulty\)/);
+  assert.match(networkValidator, /Number\.isFinite\(snapshot\.network\?\.hashrate\)/);
+  assert.match(networkValidator, /snapshot\.network\?\.targetSeconds[\s\S]*snapshot\.network\?\.latestBlockTimestamp[\s\S]*snapshot\.network\?\.hardFork[\s\S]*snapshot\.network\?\.blockSizeMedian[\s\S]*snapshot\.network\?\.blockSizeLimit[\s\S]*\.every\(isNonNegativeInteger\)/);
+  assert.match(networkValidator, /typeof snapshot\.network\?\.protocol === "string"/);
+  assert.match(networkValidator, /typeof snapshot\.network\?\.synced === "boolean"/);
+  assert.match(fetchNetwork, /const data = await response\.json\(\) as NetworkPreview;\s*if \(!isValidNetworkPreview\(data\)\) throw new Error\("Invalid network overview"\)/);
+  assert.match(page, /readClientSnapshot\(CLIENT_SERVICE_NODES_SNAPSHOT_KEY, isValidServiceNodesSnapshot\)/);
+  assert.match(page, /const accepted = rememberServiceNodesSnapshot\(data\)/);
+  assert.match(page, /if \(restoredNetwork\) setNetworkPreview\(\(current\) => current \?\? restoredNetwork\)/);
+  assert.match(page, /if \(restoredServiceNodes\) setServiceNodesLive\(\(current\) => current \?\? restoredServiceNodes\)/);
+  assert.match(page, /if \(restoredQuorums\) setQuorumLiveSnapshot\(\(current\) => current \?\? restoredQuorums\)/);
+  assert.match(page, /setSnapshot\(\(current\) => current \?\? accepted\)/);
+  assert.match(page, /setNetworkPreview\(\(current\) => !current \|\| isProvisionalSnapshot\(current\) \|\| isNewerHeightSnapshot\(/);
+  assert.match(page, /if \(!current \|\| isProvisionalSnapshot\(current\)\) return acceptedChain/);
+  assert.match(page, /if \(accepted\) setQuorumLiveSnapshot\(\(current\) => !current \|\| isProvisionalSnapshot\(current\)/);
+  assert.ok((page.match(/setServiceNodesLive\(\(current\) => !current \|\| isProvisionalSnapshot\(current\) \|\| isNewerHeightSnapshot\(/g) || []).length >= 3);
+  assert.match(serviceRefresh, /catch \{[\s\S]*Keep the last complete Service Node snapshot visible/);
+  assert.doesNotMatch(serviceRefresh, /setServiceNodesLive\(null\)|setSnapshot\(null\)|removeItem/);
+});
+
+test("binds block and transaction rows to the requested pagination selection", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const rowsStart = page.indexOf("const blocksSelectionMatches");
+  const rowsEnd = page.indexOf("const particles", rowsStart);
+  assert.ok(rowsStart >= 0 && rowsEnd > rowsStart);
+  const rowsSelection = page.slice(rowsStart, rowsEnd);
+
+  assert.match(rowsSelection, /snapshot\?\.pagination\.blockPage === blockPage\s*&& snapshot\.pagination\.pageSize === blockPageSize/);
+  assert.match(rowsSelection, /snapshot\?\.pagination\.transactionPage === transactionPage\s*&& snapshot\.pagination\.transactionScanSize === Math\.max\(160, transactionPageSize \* 32\)/);
+  assert.match(rowsSelection, /const blocks: Block\[\] = snapshot && blocksSelectionMatches \? snapshot\.blocks\.map/);
+  assert.match(rowsSelection, /const transactions: Transaction\[\] = snapshot && transactionsSelectionMatches \? snapshot\.transactions\.map/);
+  assert.match(page, /\{\(!snapshot \|\| !blocksSelectionMatches\) && <div className="nodes-loading notranslate" translate="no">\{"0 BLOCK RECORDS · No verified snapshot for this page yet"\}<\/div>\}/);
+  assert.match(page, /\{\(!snapshot \|\| !transactionsSelectionMatches\) && <div className="nodes-loading notranslate" translate="no">\{"0 TRANSACTION RECORDS · No verified snapshot for this page yet"\}<\/div>\}/);
+});
+
+test("the Service Nodes-only route skips chain and transaction-pool requests", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const poolEffect = sourceEffectContaining(page, "const refreshTransactionPool = async () => {");
+  const chainEffect = sourceEffectContaining(page, "const loadSnapshot = async () => {");
+  const chainCatchUpEffect = sourceEffectContaining(page, "const refreshSnapshotAtTip = async () => {");
+  const serviceNodeEffect = sourceEffectContaining(page, "const refreshServiceNodes = async () => {");
+
+  assert.match(poolEffect, /if \(serviceNodesOnly\) return;/);
+  assert.match(poolEffect, /fetchTransactionPool\(\)/);
+  assert.match(chainEffect, /if \(serviceNodesOnly\) return;/);
+  assert.match(chainEffect, /fetchSnapshotWithRetry\(snapshotParams\(\)\)/);
+  assert.match(chainCatchUpEffect, /if \(serviceNodesOnly\) return;/);
+  assert.match(chainCatchUpEffect, /fetchSnapshotWithRetry\(snapshotParams\(\{\}, targetHeight\)\)/);
+  assert.doesNotMatch(serviceNodeEffect, /if \(serviceNodesOnly\) return;/);
+  assert.match(serviceNodeEffect, /\/api\/service-nodes-live/);
 });
 
 test("restores every metric separator and strengthens the hero radar", async () => {
@@ -440,8 +766,8 @@ test("opens every Service Node ledger row as Service Node Details", async () => 
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const serviceNodePage = page.slice(page.indexOf("{serviceNodesOnly &&"), page.indexOf("<section className=\"quorum-section", page.indexOf("{serviceNodesOnly &&")));
   const homepageNodes = page.slice(page.indexOf("home-service-nodes"), page.indexOf("<section className=\"privacy-panel", page.indexOf("home-service-nodes")));
-  assert.match(serviceNodePage, /className="table-row service-node-row-link"/);
-  assert.match(homepageNodes, /className="table-row service-node-row-link"/);
+  assert.match(serviceNodePage, /className="table-row service-node-row-link notranslate" translate="no"/);
+  assert.match(homepageNodes, /className="table-row service-node-row-link notranslate" translate="no"/);
   assert.match(serviceNodePage, /role="button" tabIndex=\{0\} aria-label=\{`Open Service Node/);
   assert.match(homepageNodes, /onClick=\{\(\) => openServiceNode\(node\.publicKey\)\}/);
   assert.doesNotMatch(serviceNodePage, /<button className="node-key detail-link"/);

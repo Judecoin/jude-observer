@@ -36,6 +36,22 @@ type TransactionPoolSnapshot = {
   transactions: Array<{ hash: string; receivedAt: number; txType: string; fee: number; size: number; inputs: number; outputs: number }>;
 };
 
+type AwaitingServiceNode = {
+  publicKey: string;
+  contributors: number;
+  maxContributors: number;
+  operatorFee: number | null;
+  contributed: number;
+  requirement: number;
+  totalReserved: number;
+  contributionRequired: number;
+  contributionOpen: number;
+  reservedRemaining: number;
+  registeredAt: number;
+  lastRewardAt: number;
+  unlockAt: number;
+};
+
 type ChainSnapshot = {
   live: boolean;
   source: string;
@@ -64,6 +80,7 @@ type ChainSnapshot = {
   transactions: Array<{ hash: string; block: number; timestamp: number; size: number | null; confirmations: number; fee: number; reward: number; inputs: number; outputs: number; txType: string }>;
   transactionPool: TransactionPoolSnapshot;
   pagination: { blockPage: number; transactionPage: number; pageSize: number; transactionScanSize: number };
+  serviceNodesHeight: number;
   serviceNodes: {
     total: number;
     active: number;
@@ -83,6 +100,7 @@ type ChainSnapshot = {
       decommissionCount: number;
       downtimeCredit: number;
     }>;
+    awaitingNodes?: AwaitingServiceNode[];
     nodes: Array<{
       publicKey: string;
       active: boolean;
@@ -115,13 +133,34 @@ type ChainSnapshot = {
     page: number;
     pageSize: number;
     hasOlder: boolean;
+    truncated: boolean;
     records: Array<{ height: number; validators: string[]; workers: string[] }>;
     unavailable: string[];
   };
-
+  deregisteredServiceNodes?: {
+    total: number;
+    page: number;
+    pageSize: number;
+    indexedThrough: number;
+    generatedAt: string;
+    nodes: Array<{ publicKey: string; registeredAt: number; unlockedAt: number; contributions: number }>;
+  };
 };
 
 type NetworkPreview = Pick<ChainSnapshot, "live" | "source" | "node" | "fetchedAt" | "network">;
+
+type QuorumSnapshot = ChainSnapshot["quorums"] & {
+  live: boolean;
+  fetchedAt: string;
+  height: number;
+};
+
+type ServiceNodesLiveSnapshot = {
+  live: boolean;
+  fetchedAt: string;
+  height: number;
+  serviceNodes: ChainSnapshot["serviceNodes"];
+};
 
 type Detail = {
   title: string;
@@ -145,22 +184,250 @@ const TX_TYPE_META: Record<string, { label: string; icon?: string }> = {
   decommission: { label: "Decommission", icon: "/tx-types/decommission.png" }, deregistration: { label: "Deregistration", icon: "/tx-types/deregistration.png" },
   "ip-change": { label: "IP Change", icon: "/tx-types/ip-change.png" }, unlock: { label: "Unlock", icon: "/tx-types/unlock.png" },
   "block-reward": { label: "Block Reward", icon: "/tx-types/block-reward.png" },
-
+  
+  
   "state-change": { label: "Unclassified State Change" },
 };
 const TX_TYPE_LEGEND = ["block-reward", "transfer", "registration", "contribution", "recommission", "decommission", "deregistration", "ip-change", "unlock"];
 const PAGE_SIZE_OPTIONS = [5, 10, 20, 25, 50, 100] as const;
-const SNAPSHOT_CACHE_TTL_MS = 12_000;
+const compactNumberFormatter = new Intl.NumberFormat("en-US");
+const judeNumberFormatter = new Intl.NumberFormat("en-US", { maximumFractionDigits: 3 });
+const atomicJudeNumberFormatter = new Intl.NumberFormat("en-US", { maximumFractionDigits: 9 });
+const SNAPSHOT_CACHE_TTL_MS = 5_000;
+const NETWORK_REFRESH_DELAY_MS = 2_000;
+const TRANSACTION_POOL_REFRESH_DELAY_MS = 5_000;
+const QUORUM_REFRESH_DELAY_MS = 5_000;
+const QUORUM_CATCH_UP_RETRY_DELAY_MS = 2_000;
+
+
+
+const SERVICE_NODE_REFRESH_DELAY_MS = 15_000;
+const SERVICE_NODE_CATCH_UP_RETRY_DELAY_MS = 5_000;
+const SERVICE_NODE_REQUEST_TIMEOUT_MS = 120_000;
+const HIDDEN_TAB_REFRESH_DELAY_MS = 30_000;
 const SNAPSHOT_RETRY_DELAYS_MS = [0, 1_200, 3_000] as const;
+const CLIENT_SNAPSHOT_MAX_CHARS = 2_500_000;
+const CLIENT_SNAPSHOT_MAX_AGE_MS = 6 * 60 * 60 * 1_000;
+const CLIENT_SNAPSHOT_FUTURE_SKEW_MS = 60_000;
+const CLIENT_CHAIN_SNAPSHOT_KEY = "judecoin:verified-chain:v1";
+const CLIENT_NETWORK_SNAPSHOT_KEY = "judecoin:verified-network:v1";
+const CLIENT_SERVICE_NODES_SNAPSHOT_KEY = "judecoin:verified-service-nodes:v1";
+const CLIENT_QUORUM_SNAPSHOT_KEY = "judecoin:verified-quorums:v1";
+const provisionalClientSnapshots = new WeakSet<object>();
+
+function isProvisionalSnapshot(value: unknown): boolean {
+  return typeof value === "object" && value !== null && provisionalClientSnapshots.has(value);
+}
 const snapshotCache = new Map<string, { data: ChainSnapshot; expiresAt: number }>();
 const snapshotRequests = new Map<string, Promise<ChainSnapshot>>();
-let networkPreviewCache: { data: NetworkPreview; expiresAt: number } | null = null;
 let networkPreviewRequest: Promise<NetworkPreview> | null = null;
-let transactionPoolCache: { data: TransactionPoolSnapshot; expiresAt: number } | null = null;
 let transactionPoolRequest: Promise<TransactionPoolSnapshot> | null = null;
+let lastVerifiedChainSnapshot: ChainSnapshot | null = null;
+let lastVerifiedNetworkPreview: NetworkPreview | null = null;
+let lastVerifiedServiceNodesSnapshot: ServiceNodesLiveSnapshot | null = null;
+let lastVerifiedQuorumSnapshot: QuorumSnapshot | null = null;
 
 function isBlockHeightLabel(label: string) {
   return /\bHEIGHT\b|\bAT BLOCK\b|\bREWARD BLOCK\b|\bDECOMMISSION BLOCK\b|\bIP CHANGE BLOCK\b|\bREGISTERED BLOCK\b/.test(label);
+}
+
+function isNewerHeightSnapshot(currentHeight: number, currentFetchedAt: string, nextHeight: number, nextFetchedAt: string) {
+  if (nextHeight !== currentHeight) return nextHeight > currentHeight;
+  return Date.parse(nextFetchedAt) > Date.parse(currentFetchedAt);
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) >= 0;
+}
+
+function isValidServiceNodesSnapshot(value: unknown): value is ServiceNodesLiveSnapshot {
+  const snapshot = value as ServiceNodesLiveSnapshot | null;
+  const nodes = snapshot?.serviceNodes;
+  if (snapshot?.live !== true || !isNonNegativeInteger(snapshot.height)
+    || typeof snapshot.fetchedAt !== "string" || !Number.isFinite(Date.parse(snapshot.fetchedAt))
+    || !nodes) return false;
+  const counts = [nodes.total, nodes.active, nodes.funded, nodes.exiting, nodes.decommissioned];
+  return counts.every(isNonNegativeInteger)
+    && nodes.active <= nodes.total
+    && nodes.funded <= nodes.total
+    && Array.isArray(nodes.nodes)
+    && nodes.nodes.length === nodes.total
+    && nodes.nodes.every((node) => node && typeof node.publicKey === "string"
+      && typeof node.active === "boolean" && typeof node.funded === "boolean"
+      && typeof node.version === "string" && typeof node.unlocking === "boolean"
+      && [node.contributed, node.requirement, node.registeredAt, node.lastRewardAt, node.unlockAt,
+        node.contributors, node.maxContributors, node.lastUptimeProof].every(isNonNegativeInteger))
+    && new Set(nodes.nodes.map((node) => node.publicKey)).size === nodes.total
+    && nodes.nodes.filter((node) => node.active).length === nodes.active
+    && nodes.nodes.filter((node) => node.funded).length === nodes.funded
+    && Number.isFinite(nodes.totalContributed) && nodes.totalContributed >= 0
+    && Number.isFinite(nodes.stakingRequirement) && nodes.stakingRequirement >= 0
+    && Array.isArray(nodes.awaitingNodes)
+    && nodes.awaitingNodes.length === nodes.total - nodes.funded
+    && nodes.awaitingNodes.every((node) => node && typeof node.publicKey === "string"
+      && [node.contributors, node.maxContributors, node.contributed, node.requirement,
+        node.contributionRequired, node.contributionOpen, node.reservedRemaining,
+        node.registeredAt, node.lastRewardAt, node.unlockAt].every(isNonNegativeInteger))
+    && Array.isArray(nodes.unlockingNodes)
+    && nodes.unlockingNodes.length === nodes.exiting
+    && nodes.unlockingNodes.every((node) => node && typeof node.publicKey === "string"
+      && [node.contributed, node.registeredAt, node.lastRewardAt, node.unlockAt].every(isNonNegativeInteger))
+    && Array.isArray(nodes.decommissionedNodes)
+    && nodes.decommissionedNodes.length === nodes.decommissioned
+    && nodes.decommissionedNodes.every((node) => node && typeof node.publicKey === "string"
+      && [node.contributors, node.maxContributors, node.lastUptimeProof,
+        node.decommissionCount].every(isNonNegativeInteger) && Number.isInteger(node.downtimeCredit));
+}
+
+function isValidNetworkPreview(value: unknown): value is NetworkPreview {
+  const snapshot = value as NetworkPreview | null;
+  return snapshot?.live === true
+    && typeof snapshot.fetchedAt === "string"
+    && Number.isFinite(Date.parse(snapshot.fetchedAt))
+    && isNonNegativeInteger(snapshot.network?.height)
+    && Number.isFinite(snapshot.network?.difficulty)
+    && Number.isFinite(snapshot.network?.hashrate)
+    && [snapshot.network?.targetSeconds, snapshot.network?.latestBlockTimestamp,
+      snapshot.network?.hardFork, snapshot.network?.blockSizeMedian, snapshot.network?.blockSizeLimit].every(isNonNegativeInteger)
+    && typeof snapshot.network?.protocol === "string"
+    && typeof snapshot.network?.synced === "boolean";
+}
+
+function isValidQuorumSnapshot(value: unknown): value is QuorumSnapshot {
+  const snapshot = value as QuorumSnapshot | null;
+  return snapshot?.live === true
+    && snapshot.trusted === true
+    && isNonNegativeInteger(snapshot.height)
+    && typeof snapshot.fetchedAt === "string"
+    && Number.isFinite(Date.parse(snapshot.fetchedAt))
+    && isNonNegativeInteger(snapshot.page)
+    && isNonNegativeInteger(snapshot.pageSize)
+    && Array.isArray(snapshot.records)
+    && snapshot.records.length > 0
+    && snapshot.records.every((record) => isNonNegativeInteger(record.height)
+      && Array.isArray(record.validators) && Array.isArray(record.workers)
+      && [...record.validators, ...record.workers].every((key) => typeof key === "string"));
+}
+
+function isValidChainSnapshot(value: unknown): value is ChainSnapshot {
+  const snapshot = value as ChainSnapshot | null;
+  return snapshot?.live === true
+    && typeof snapshot.fetchedAt === "string"
+    && Number.isFinite(Date.parse(snapshot.fetchedAt))
+    && isValidNetworkPreview(snapshot)
+    && Array.isArray(snapshot.blocks)
+    && snapshot.blocks.every((block) => block && typeof block.hash === "string"
+      && [block.height, block.timestamp, block.txs, block.size, block.difficulty,
+        block.fee, block.reward, block.inputs, block.outputs].every(isNonNegativeInteger))
+    && Array.isArray(snapshot.transactions)
+    && snapshot.transactions.every((tx) => tx && typeof tx.hash === "string" && typeof tx.txType === "string"
+      && [tx.block, tx.timestamp, tx.confirmations, tx.fee, tx.inputs, tx.outputs].every(isNonNegativeInteger)
+      && (tx.size === null || isNonNegativeInteger(tx.size)))
+    && isValidServiceNodesSnapshot({ live: snapshot.live, fetchedAt: snapshot.fetchedAt,
+      height: snapshot.serviceNodesHeight, serviceNodes: snapshot.serviceNodes })
+    && isNonNegativeInteger(snapshot.pagination?.blockPage)
+    && isNonNegativeInteger(snapshot.pagination?.transactionPage)
+    && PAGE_SIZE_OPTIONS.includes(snapshot.pagination?.pageSize as typeof PAGE_SIZE_OPTIONS[number])
+    && isNonNegativeInteger(snapshot.pagination?.transactionScanSize)
+    && isNonNegativeInteger(snapshot.quorums?.page)
+    && isNonNegativeInteger(snapshot.quorums?.pageSize)
+    && Array.isArray(snapshot.quorums?.records)
+    && typeof snapshot.transactionPool?.available === "boolean";
+}
+
+function sameChainSelection(left: ChainSnapshot, right: ChainSnapshot) {
+  return left.pagination.blockPage === right.pagination.blockPage
+    && left.pagination.transactionPage === right.pagination.transactionPage
+    && left.pagination.pageSize === right.pagination.pageSize
+    && left.pagination.transactionScanSize === right.pagination.transactionScanSize
+    && left.quorums.page === right.quorums.page
+    && left.quorums.pageSize === right.quorums.pageSize;
+}
+
+function readClientSnapshot<T>(key: string, validate: (value: unknown) => value is T): T | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw || raw.length > CLIENT_SNAPSHOT_MAX_CHARS) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!validate(parsed)) return null;
+    const cached = parsed as { fetchedAt?: string; height?: number; network?: { height?: number } };
+    const timestamp = Date.parse(cached.fetchedAt || "");
+    const ageMs = Date.now() - timestamp;
+    const height = cached.height ?? cached.network?.height;
+    if (!Number.isFinite(timestamp) || ageMs > CLIENT_SNAPSHOT_MAX_AGE_MS
+      || ageMs < -CLIENT_SNAPSHOT_FUTURE_SKEW_MS
+      || !isNonNegativeInteger(height) || height > 100_000_000) return null;
+    provisionalClientSnapshots.add(parsed as object);
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeClientSnapshot(key: string, value: unknown) {
+  if (typeof window === "undefined") return;
+  try {
+    const serialized = JSON.stringify(value);
+    if (serialized.length <= CLIENT_SNAPSHOT_MAX_CHARS) window.localStorage.setItem(key, serialized);
+  } catch {
+    
+  }
+}
+
+function rememberChainSnapshot(snapshot: ChainSnapshot) {
+  if (isProvisionalSnapshot(snapshot)) return snapshot;
+  if (!isValidChainSnapshot(snapshot)) return lastVerifiedChainSnapshot;
+  if (!lastVerifiedChainSnapshot || !sameChainSelection(lastVerifiedChainSnapshot, snapshot) || isNewerHeightSnapshot(
+    lastVerifiedChainSnapshot.network.height, lastVerifiedChainSnapshot.fetchedAt,
+    snapshot.network.height, snapshot.fetchedAt,
+  )) {
+    lastVerifiedChainSnapshot = snapshot;
+    writeClientSnapshot(CLIENT_CHAIN_SNAPSHOT_KEY, snapshot);
+  }
+  return lastVerifiedChainSnapshot;
+}
+
+function rememberNetworkPreview(snapshot: NetworkPreview) {
+  if (isProvisionalSnapshot(snapshot)) return snapshot;
+  if (!isValidNetworkPreview(snapshot)) return lastVerifiedNetworkPreview;
+  if (!lastVerifiedNetworkPreview || isNewerHeightSnapshot(
+    lastVerifiedNetworkPreview.network.height, lastVerifiedNetworkPreview.fetchedAt,
+    snapshot.network.height, snapshot.fetchedAt,
+  )) {
+    lastVerifiedNetworkPreview = snapshot;
+    writeClientSnapshot(CLIENT_NETWORK_SNAPSHOT_KEY, snapshot);
+  }
+  return lastVerifiedNetworkPreview;
+}
+
+function rememberServiceNodesSnapshot(snapshot: ServiceNodesLiveSnapshot) {
+  if (isProvisionalSnapshot(snapshot)) return snapshot;
+  if (!isValidServiceNodesSnapshot(snapshot)) return lastVerifiedServiceNodesSnapshot;
+  if (!lastVerifiedServiceNodesSnapshot || isNewerHeightSnapshot(
+    lastVerifiedServiceNodesSnapshot.height, lastVerifiedServiceNodesSnapshot.fetchedAt,
+    snapshot.height, snapshot.fetchedAt,
+  )) {
+    lastVerifiedServiceNodesSnapshot = snapshot;
+    writeClientSnapshot(CLIENT_SERVICE_NODES_SNAPSHOT_KEY, snapshot);
+  }
+  return lastVerifiedServiceNodesSnapshot;
+}
+
+function rememberQuorumSnapshot(snapshot: QuorumSnapshot) {
+  if (isProvisionalSnapshot(snapshot)) return snapshot;
+  if (!isValidQuorumSnapshot(snapshot)) return lastVerifiedQuorumSnapshot;
+  if (!lastVerifiedQuorumSnapshot
+    || lastVerifiedQuorumSnapshot.page !== snapshot.page
+    || lastVerifiedQuorumSnapshot.pageSize !== snapshot.pageSize
+    || isNewerHeightSnapshot(
+      lastVerifiedQuorumSnapshot.height, lastVerifiedQuorumSnapshot.fetchedAt,
+      snapshot.height, snapshot.fetchedAt,
+    )) {
+    lastVerifiedQuorumSnapshot = snapshot;
+    writeClientSnapshot(CLIENT_QUORUM_SNAPSHOT_KEY, snapshot);
+  }
+  return lastVerifiedQuorumSnapshot;
 }
 
 async function fetchSnapshot(params: URLSearchParams) {
@@ -170,9 +437,10 @@ async function fetchSnapshot(params: URLSearchParams) {
   if (cached) snapshotCache.delete(key);
   const pending = snapshotRequests.get(key);
   if (pending) return pending;
-  const request = fetch(`/api/chain?${key}`).then(async (response) => {
+  const request = fetch(`/api/chain?${key}`, { cache: "no-store" }).then(async (response) => {
     if (!response.ok) throw new Error("Network data unavailable");
     const data = await response.json() as ChainSnapshot;
+    if (!isValidChainSnapshot(data)) throw new Error("Invalid network snapshot");
     snapshotCache.set(key, { data, expiresAt: Date.now() + SNAPSHOT_CACHE_TTL_MS });
     return data;
   }).finally(() => snapshotRequests.delete(key));
@@ -194,24 +462,24 @@ async function fetchSnapshotWithRetry(params: URLSearchParams) {
 }
 
 async function fetchNetworkPreview() {
-  if (networkPreviewCache && networkPreviewCache.expiresAt > Date.now()) return networkPreviewCache.data;
   if (networkPreviewRequest) return networkPreviewRequest;
-  networkPreviewRequest = fetch("/api/network").then(async (response) => {
+  networkPreviewRequest = fetch("/api/network", { cache: "no-store" }).then(async (response) => {
     if (!response.ok) throw new Error("Network overview unavailable");
     const data = await response.json() as NetworkPreview;
-    networkPreviewCache = { data, expiresAt: Date.now() + SNAPSHOT_CACHE_TTL_MS };
+    if (!isValidNetworkPreview(data)) throw new Error("Invalid network overview");
     return data;
   }).finally(() => { networkPreviewRequest = null; });
   return networkPreviewRequest;
 }
 
 async function fetchTransactionPool() {
-  if (transactionPoolCache && transactionPoolCache.expiresAt > Date.now()) return transactionPoolCache.data;
   if (transactionPoolRequest) return transactionPoolRequest;
-  transactionPoolRequest = fetch("/api/transaction-pool").then(async (response) => {
+  transactionPoolRequest = fetch("/api/transaction-pool", { cache: "no-store" }).then(async (response) => {
     if (!response.ok) throw new Error("Transaction pool unavailable");
     const data = await response.json() as TransactionPoolSnapshot;
-    transactionPoolCache = { data, expiresAt: Date.now() + SNAPSHOT_CACHE_TTL_MS };
+    if (data.available !== true || !Number.isInteger(data.count) || data.count < 0 || !Array.isArray(data.transactions)) {
+      throw new Error("Invalid transaction pool response");
+    }
     return data;
   }).finally(() => { transactionPoolRequest = null; });
   return transactionPoolRequest;
@@ -230,7 +498,7 @@ function PaginationControls({ page, lastPage, pageSize, onPageChange, onPageSize
   return <div className="pager">
     <div className="page-navigation">
       <button disabled={loading || page === 0} onMouseEnter={() => onPrefetchPage?.(Math.max(0, page - 1))} onFocus={() => onPrefetchPage?.(Math.max(0, page - 1))} onClick={() => onPageChange(Math.max(0, page - 1))}>← {"Prev"}</button>
-      <span>{loading ? "Loading…" : `Page ${compact(page + 1)} of ${compact(lastPage + 1)}`}</span>
+      <span>{`Page ${compact(page + 1)} of ${compact(lastPage + 1)}`}</span>
       <button disabled={loading || disableNext || page >= lastPage} onMouseEnter={() => onPrefetchPage?.(Math.min(lastPage, page + 1))} onFocus={() => onPrefetchPage?.(Math.min(lastPage, page + 1))} onClick={() => onPageChange(Math.min(lastPage, page + 1))}>{"Next"} →</button>
     </div>
     <label className="page-size-control" title={"Rows per page"}>
@@ -253,16 +521,12 @@ function DetailValue({ value }: { value: ReactNode }) {
 }
 
 function compact(value: number) {
-  return new Intl.NumberFormat("en-US").format(value);
+  return compactNumberFormatter.format(value);
 }
 
 function inOut(inputs?: number, outputs?: number) {
   if (inputs == null && outputs == null) return "N/A";
   return `${inputs ?? "N/A"}/${outputs ?? "N/A"}`;
-}
-
-function MetricSkeleton({ width = "normal" }: { width?: "normal" | "wide" | "short" }) {
-  return <span className={`metric-skeleton metric-skeleton-${width}`} aria-hidden="true" />;
 }
 
 function age(timestamp: number) {
@@ -289,11 +553,11 @@ function hashPreview(value: string) {
 }
 
 function jude(value: number) {
-  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 3 }).format(value / 1_000_000_000);
+  return judeNumberFormatter.format(value / 1_000_000_000);
 }
 
 function atomicJude(value: number) {
-  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 9 }).format(value / 1_000_000_000);
+  return atomicJudeNumberFormatter.format(value / 1_000_000_000);
 }
 
 function estimatedBlockWait(blocks: number, targetSeconds: number) {
@@ -321,14 +585,50 @@ function estimatedBlockDate(currentHeight: number, unlockHeight: number, targetS
   })} UTC`;
 }
 
+function AwaitingContributionsPanel({ nodes, onOpen, home = false }: {
+  nodes: AwaitingServiceNode[];
+  onOpen: (publicKey: string) => void;
+  home?: boolean;
+}) {
+  return <section className={`awaiting-live${home ? " home-awaiting" : ""}`} aria-label="Service Nodes awaiting contributions">
+    <div className="awaiting-live-heading">
+      <div>
+        <h3>{"Awaiting Contributions"}</h3>
+        <p>{"Registered Service Nodes that are not fully funded. Open to public excludes stake already reserved to specific contributor addresses."}</p>
+      </div>
+      <strong className="notranslate" translate="no">{`${compact(nodes.length)} AWAITING`}</strong>
+    </div>
+    <div className="awaiting-live-table">
+      <div className="table-head"><span>{"STATUS"}</span><span>{"NODE PUBLIC KEY"}</span><span>{"CONTRIBUTORS"}</span><span>{"OPERATOR FEE (%)"}</span><span>{"CONTRIBUTED (JUDE)"}</span><span>{"STILL REQUIRED (JUDE)"}</span><span>{"OPEN TO PUBLIC (JUDE)"}</span><span>{"RESERVED REMAINING (JUDE)"}</span><span>{"REGISTRATION HEIGHT"}</span><span>{"LAST REWARD BLOCK"}</span><span>{"UNLOCK STATUS"}</span></div>
+      {nodes.map((node) => (
+        <div className="table-row service-node-row-link notranslate" translate="no" key={node.publicKey} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => onOpen(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpen(node.publicKey); } }}>
+          <span className="awaiting-node-status">{"○ AWAITING"}</span>
+          <span className="node-key detail-link">{hashPreview(node.publicKey)}</span>
+          <span>{node.contributors}/{node.maxContributors}</span>
+          <span>{node.operatorFee == null ? "NOT REPORTED" : node.operatorFee}</span>
+          <span>{jude(node.contributed)}</span>
+          <span className="awaiting-required">{jude(node.contributionRequired)}</span>
+          <span>{jude(node.contributionOpen)}</span>
+          <span>{jude(node.reservedRemaining)}</span>
+          <span className="block-height detail-link">{compact(node.registeredAt)}</span>
+          <span className="block-height detail-link">{compact(node.lastRewardAt)}</span>
+          <span className="no-unlock" title={node.unlockAt > 0 ? `Unlock requested for block ${compact(node.unlockAt)}` : "No unlock requested"}>{node.unlockAt > 0 ? compact(node.unlockAt) : "∞"}</span>
+        </div>
+      ))}
+    </div>
+  </section>;
+}
+
 export default function Home({ serviceNodesOnly = false, statisticsOnly = false }: { serviceNodesOnly?: boolean; statisticsOnly?: boolean }) {
   const [query, setQuery] = useState("");
   const [serviceNodeQuery, setServiceNodeQuery] = useState("");
   const [message, setMessage] = useState("");
   const [searchLoading, setSearchLoading] = useState(false);
   const [snapshot, setSnapshot] = useState<ChainSnapshot | null>(null);
-  const [networkPreview, setNetworkPreview] = useState<NetworkPreview | null>(null);
+  const [serviceNodesLive, setServiceNodesLive] = useState<ServiceNodesLiveSnapshot | null>(() => lastVerifiedServiceNodesSnapshot);
+  const [networkPreview, setNetworkPreview] = useState<NetworkPreview | null>(() => lastVerifiedNetworkPreview);
   const [transactionPoolSnapshot, setTransactionPoolSnapshot] = useState<TransactionPoolSnapshot | null>(null);
+  const [quorumLiveSnapshot, setQuorumLiveSnapshot] = useState<QuorumSnapshot | null>(() => lastVerifiedQuorumSnapshot);
   const [connection, setConnection] = useState<"loading" | "live" | "offline">("loading");
   const [detail, setDetail] = useState<Detail | null>(null);
   const [detailPending, setDetailPending] = useState<DetailPending | null>(null);
@@ -349,9 +649,28 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
   const [deregisteredNodePageSize, setDeregisteredNodePageSize] = useState(20);
   const [pageSizePreferencesLoaded, setPageSizePreferencesLoaded] = useState(false);
   const [quorumLoading, setQuorumLoading] = useState(false);
-  const [quorumError, setQuorumError] = useState("");
   const [lifecycleView, setLifecycleView] = useState<"unlocking" | "decommissioned" | "deregistered" | null>(null);
   const [lifecycleInitialized, setLifecycleInitialized] = useState(false);
+  const highestKnownHeightRef = useRef(0);
+  const serviceNodeRefreshRef = useRef<(() => void) | null>(null);
+  const quorumRefreshRef = useRef<(() => void) | null>(null);
+  const knownChainHeight = Math.max(
+    isProvisionalSnapshot(networkPreview) ? 0 : networkPreview?.network.height ?? 0,
+    isProvisionalSnapshot(snapshot) ? 0 : snapshot?.network.height ?? 0,
+    isProvisionalSnapshot(serviceNodesLive) ? 0 : serviceNodesLive?.height ?? 0,
+  );
+
+  useEffect(() => {
+    const restoredNetwork = readClientSnapshot(CLIENT_NETWORK_SNAPSHOT_KEY, isValidNetworkPreview);
+    const restoredServiceNodes = readClientSnapshot(CLIENT_SERVICE_NODES_SNAPSHOT_KEY, isValidServiceNodesSnapshot);
+    const restoredQuorums = readClientSnapshot(CLIENT_QUORUM_SNAPSHOT_KEY, isValidQuorumSnapshot);
+    
+    
+    
+    if (restoredNetwork) setNetworkPreview((current) => current ?? restoredNetwork);
+    if (restoredServiceNodes) setServiceNodesLive((current) => current ?? restoredServiceNodes);
+    if (restoredQuorums) setQuorumLiveSnapshot((current) => current ?? restoredQuorums);
+  }, []);
 
   const openSection = (section: "blocks" | "transactions" | "quorums") => {
     if (serviceNodesOnly || statisticsOnly) {
@@ -365,69 +684,390 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
     }
   };
 
-  const snapshotParams = (overrides: Partial<Record<"blockPage" | "blockPageSize" | "transactionPage" | "transactionPageSize" | "quorumPage" | "quorumPageSize", number>> = {}) => {
+  const snapshotParams = (
+    overrides: Partial<Record<"blockPage" | "blockPageSize" | "transactionPage" | "transactionPageSize" | "quorumPage" | "quorumPageSize", number>> = {},
+    tip?: number,
+  ) => {
     const params = new URLSearchParams({
       blockPage: String(overrides.blockPage ?? blockPage), blockPageSize: String(overrides.blockPageSize ?? blockPageSize),
       transactionPage: String(overrides.transactionPage ?? transactionPage), transactionPageSize: String(overrides.transactionPageSize ?? transactionPageSize),
       quorumPage: String(overrides.quorumPage ?? quorumPage), quorumPageSize: String(overrides.quorumPageSize ?? quorumPageSize),
     });
+    if (Number.isInteger(tip) && Number(tip) >= 0) params.set("tip", String(tip));
     return params;
   };
 
   const prefetchSnapshot = (overrides: Parameters<typeof snapshotParams>[0]) => {
-    void fetchSnapshot(snapshotParams(overrides)).catch(() => undefined);
+    void fetchSnapshot(snapshotParams(overrides, knownChainHeight)).catch(() => undefined);
   };
 
   useEffect(() => {
+    if (!statisticsOnly) return;
     let active = true;
-    let timer: number | undefined;
-    const controller = new AbortController();
+    let timer = 0;
     const load = async () => {
       try {
-        const response = await fetch("/api/deregistered-service-nodes", {
-          cache: "no-store", signal: controller.signal,
-        });
+        const response = await fetch("/api/deregistered-service-nodes", { cache: "no-store" });
         if (!response.ok) throw new Error("Deregistration data unavailable");
         const data = await response.json() as DeregistrationSnapshot;
-        if (active) setDeregisteredSnapshot(data);
+        if (!data.live || data.status !== "live" || !Number.isInteger(data.total) || !Array.isArray(data.nodes)) {
+          throw new Error("Invalid deregistration data");
+        } else if (active) {
+          setDeregisteredSnapshot((current) => !current || isNewerHeightSnapshot(
+            current.indexedThrough, current.generatedAt, data.indexedThrough, data.generatedAt,
+          ) ? data : current);
+        }
       } catch {
-        if (active) setDeregisteredSnapshot(null);
-      } finally {
-        if (active) timer = window.setTimeout(load, 30_000);
+        if (active) timer = window.setTimeout(load, TRANSACTION_POOL_REFRESH_DELAY_MS);
       }
     };
     void load();
-    return () => { active = false; controller.abort(); window.clearTimeout(timer); };
-  }, []);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [statisticsOnly, knownChainHeight]);
 
   useEffect(() => {
     let active = true;
-    const load = async () => {
-      void fetchNetworkPreview().then((data) => {
-        if (!active) return;
-        setNetworkPreview(data);
-        setConnection("live");
-      }).catch(() => undefined);
-      void fetchTransactionPool().then((data) => {
-        if (active) setTransactionPoolSnapshot(data);
-      }).catch(() => undefined);
+    let timer = 0;
+    let inFlight = false;
+    const refreshNetwork = async () => {
+      if (!active || inFlight) return;
+      if (document.hidden) {
+        timer = window.setTimeout(refreshNetwork, HIDDEN_TAB_REFRESH_DELAY_MS);
+        return;
+      }
+      inFlight = true;
       try {
-        const params = snapshotParams();
-        const data = await fetchSnapshotWithRetry(params);
-        if (active) { setSnapshot(data); setConnection("live"); setQuorumError(""); }
-      } catch {
-        if (active) {
-          setConnection((current) => current === "live" ? current : "offline");
-          setQuorumError("Unable to load this page");
+        const data = await fetchNetworkPreview();
+        if (!active) return;
+        setConnection("live");
+        const previousHeight = highestKnownHeightRef.current;
+        if (data.network.height < previousHeight) return;
+        highestKnownHeightRef.current = Math.max(highestKnownHeightRef.current, data.network.height);
+        const accepted = rememberNetworkPreview(data);
+        if (accepted) setNetworkPreview((current) => !current || isProvisionalSnapshot(current) || isNewerHeightSnapshot(
+          current.network.height, current.fetchedAt, accepted.network.height, accepted.fetchedAt,
+        ) ? accepted : current);
+        if (data.network.height > previousHeight) {
+          serviceNodeRefreshRef.current?.();
+          quorumRefreshRef.current?.();
         }
+      } catch {
+        
+        if (active) setConnection("offline");
+      } finally {
+        inFlight = false;
+        if (active) timer = window.setTimeout(refreshNetwork, NETWORK_REFRESH_DELAY_MS);
+      }
+    };
+    const resume = () => {
+      if (!document.hidden && !inFlight) {
+        window.clearTimeout(timer);
+        void refreshNetwork();
+      }
+    };
+    document.addEventListener("visibilitychange", resume);
+    void refreshNetwork();
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", resume);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (serviceNodesOnly || statisticsOnly) return;
+    if (!pageSizePreferencesLoaded) return;
+    let active = true;
+    let timer = 0;
+    let inFlight = false;
+    let refreshQueued = false;
+
+    const refreshQuorums = async () => {
+      if (!active || inFlight) return;
+      if (document.hidden) {
+        timer = window.setTimeout(refreshQuorums, HIDDEN_TAB_REFRESH_DELAY_MS);
+        return;
+      }
+      inFlight = true;
+      let nextDelay = QUORUM_REFRESH_DELAY_MS;
+      try {
+        const params = new URLSearchParams({ page: String(quorumPage), pageSize: String(quorumPageSize) });
+        const tip = highestKnownHeightRef.current;
+        if (tip > 0) params.set("tip", String(tip));
+        else if (quorumPage === 0) params.set("latest", "1");
+        const response = await fetch(`/api/quorums?${params}`, { cache: "no-store" });
+        if (!response.ok) throw new Error("Quorum data unavailable");
+        const data = await response.json() as QuorumSnapshot;
+        if (!data.live || data.trusted !== true || !Number.isInteger(data.height)
+          || data.page !== quorumPage || data.pageSize !== quorumPageSize
+          || !Array.isArray(data.records) || data.records.length === 0
+          || data.records.some((record) => !Number.isInteger(record.height)
+            || !Array.isArray(record.validators) || !Array.isArray(record.workers))) {
+          throw new Error("Invalid quorum data");
+        }
+        highestKnownHeightRef.current = Math.max(highestKnownHeightRef.current, data.height);
+        if (active) {
+          const accepted = rememberQuorumSnapshot(data);
+          if (accepted) setQuorumLiveSnapshot((current) => !current || isProvisionalSnapshot(current)
+            || current.page !== accepted.page
+            || current.pageSize !== accepted.pageSize
+            || isNewerHeightSnapshot(current.height, current.fetchedAt, accepted.height, accepted.fetchedAt)
+            ? accepted : current);
+          setQuorumLoading(false);
+          nextDelay = data.height < highestKnownHeightRef.current
+            ? QUORUM_CATCH_UP_RETRY_DELAY_MS
+            : QUORUM_REFRESH_DELAY_MS;
+        }
+      } catch {
+        
+        nextDelay = QUORUM_REFRESH_DELAY_MS;
+      } finally {
+        inFlight = false;
+        if (active) {
+          const delay = refreshQueued ? 0 : nextDelay;
+          refreshQueued = false;
+          timer = window.setTimeout(refreshQuorums, delay);
+        }
+      }
+    };
+
+    const requestRefresh = () => {
+      if (document.hidden) return;
+      if (inFlight) {
+        refreshQueued = true;
+        return;
+      }
+      window.clearTimeout(timer);
+      void refreshQuorums();
+    };
+    const resume = () => { if (!document.hidden) requestRefresh(); };
+
+    quorumRefreshRef.current = requestRefresh;
+    document.addEventListener("visibilitychange", resume);
+    void refreshQuorums();
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+      if (quorumRefreshRef.current === requestRefresh) quorumRefreshRef.current = null;
+      document.removeEventListener("visibilitychange", resume);
+    };
+  }, [serviceNodesOnly, statisticsOnly, pageSizePreferencesLoaded, quorumPage, quorumPageSize]);
+
+  useEffect(() => {
+    if (serviceNodesOnly) return;
+    let active = true;
+    let timer = 0;
+    let inFlight = false;
+    const refreshTransactionPool = async () => {
+      if (!active || inFlight) return;
+      if (document.hidden) {
+        timer = window.setTimeout(refreshTransactionPool, HIDDEN_TAB_REFRESH_DELAY_MS);
+        return;
+      }
+      inFlight = true;
+      try {
+        const data = await fetchTransactionPool();
+        if (active) setTransactionPoolSnapshot(data);
+      } catch {
+        
+      } finally {
+        inFlight = false;
+        if (active) timer = window.setTimeout(refreshTransactionPool, TRANSACTION_POOL_REFRESH_DELAY_MS);
+      }
+    };
+    const resume = () => {
+      if (!document.hidden && !inFlight) {
+        window.clearTimeout(timer);
+        void refreshTransactionPool();
+      }
+    };
+    document.addEventListener("visibilitychange", resume);
+    void refreshTransactionPool();
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", resume);
+    };
+  }, [serviceNodesOnly]);
+
+  useEffect(() => {
+    if (serviceNodesOnly) return;
+    if (!pageSizePreferencesLoaded) return;
+    let active = true;
+    let retryTimer = 0;
+    const loadSnapshot = async () => {
+      try {
+        const data = await fetchSnapshotWithRetry(snapshotParams());
+        if (!active) return;
+        highestKnownHeightRef.current = Math.max(highestKnownHeightRef.current, data.network.height);
+        const acceptedChain = rememberChainSnapshot(data) || data;
+        setSnapshot((current) => {
+          if (!current || isProvisionalSnapshot(current)) return acceptedChain;
+          const sameSelection = current.pagination.blockPage === acceptedChain.pagination.blockPage
+            && current.pagination.transactionPage === acceptedChain.pagination.transactionPage
+            && current.pagination.pageSize === acceptedChain.pagination.pageSize
+            && current.pagination.transactionScanSize === acceptedChain.pagination.transactionScanSize
+            && current.quorums.page === acceptedChain.quorums.page
+            && current.quorums.pageSize === acceptedChain.quorums.pageSize;
+          if (!sameSelection) return acceptedChain;
+          return isNewerHeightSnapshot(
+            current.network.height, current.fetchedAt, acceptedChain.network.height, acceptedChain.fetchedAt,
+          ) ? acceptedChain : current;
+        });
+        const seed = {
+          live: acceptedChain.live,
+          fetchedAt: acceptedChain.fetchedAt,
+          height: acceptedChain.serviceNodesHeight,
+          serviceNodes: acceptedChain.serviceNodes,
+        };
+        const acceptedServiceNodes = rememberServiceNodesSnapshot(seed);
+        if (acceptedServiceNodes) setServiceNodesLive((current) => !current || isProvisionalSnapshot(current) || isNewerHeightSnapshot(
+          current.height, current.fetchedAt, acceptedServiceNodes.height, acceptedServiceNodes.fetchedAt,
+        ) ? acceptedServiceNodes : current);
+        setConnection("live");
+      } catch {
+        if (!active) return;
+        setConnection("offline");
+        retryTimer = window.setTimeout(loadSnapshot, TRANSACTION_POOL_REFRESH_DELAY_MS);
       } finally {
         if (active) setQuorumLoading(false);
       }
     };
-    load();
-    const timer = blockPage === 0 && transactionPage === 0 && quorumPage === 0 ? window.setInterval(load, 30_000) : 0;
-    return () => { active = false; window.clearInterval(timer); };
-  }, [blockPage, blockPageSize, transactionPage, transactionPageSize, quorumPage, quorumPageSize]);
+    void loadSnapshot();
+    return () => {
+      active = false;
+      window.clearTimeout(retryTimer);
+    };
+  }, [serviceNodesOnly, pageSizePreferencesLoaded, blockPage, blockPageSize, transactionPage, transactionPageSize, quorumPage, quorumPageSize]);
+
+  useEffect(() => {
+    if (serviceNodesOnly) return;
+    if (!pageSizePreferencesLoaded) return;
+    const snapshotHeight = snapshot?.network.height;
+    if (snapshotHeight == null || knownChainHeight <= snapshotHeight) return;
+    const targetHeight = knownChainHeight;
+    let active = true;
+    let retryTimer = 0;
+    const refreshSnapshotAtTip = async () => {
+      try {
+        const data = await fetchSnapshotWithRetry(snapshotParams({}, targetHeight));
+        if (!active) return;
+        highestKnownHeightRef.current = Math.max(highestKnownHeightRef.current, data.network.height);
+        const acceptedChain = rememberChainSnapshot(data) || data;
+        setSnapshot((current) => !current || isProvisionalSnapshot(current) || isNewerHeightSnapshot(
+          current.network.height, current.fetchedAt, acceptedChain.network.height, acceptedChain.fetchedAt,
+        ) ? acceptedChain : current);
+        const seed = {
+          live: acceptedChain.live,
+          fetchedAt: acceptedChain.fetchedAt,
+          height: acceptedChain.serviceNodesHeight,
+          serviceNodes: acceptedChain.serviceNodes,
+        };
+        const acceptedServiceNodes = rememberServiceNodesSnapshot(seed);
+        if (acceptedServiceNodes) setServiceNodesLive((current) => !current || isProvisionalSnapshot(current) || isNewerHeightSnapshot(
+          current.height, current.fetchedAt, acceptedServiceNodes.height, acceptedServiceNodes.fetchedAt,
+        ) ? acceptedServiceNodes : current);
+        setConnection("live");
+        if (data.network.height < targetHeight) {
+          retryTimer = window.setTimeout(refreshSnapshotAtTip, NETWORK_REFRESH_DELAY_MS);
+        }
+      } catch {
+        if (active) retryTimer = window.setTimeout(refreshSnapshotAtTip, NETWORK_REFRESH_DELAY_MS);
+      }
+    };
+    void refreshSnapshotAtTip();
+    return () => {
+      active = false;
+      window.clearTimeout(retryTimer);
+    };
+  }, [serviceNodesOnly, pageSizePreferencesLoaded, knownChainHeight, snapshot?.network.height, blockPage, blockPageSize, transactionPage, transactionPageSize, quorumPage, quorumPageSize]);
+
+  useEffect(() => {
+    let active = true;
+    let timer = 0;
+    let controller: AbortController | null = null;
+    let requestTimeout = 0;
+    let inFlight = false;
+    let refreshQueued = false;
+
+    const refreshServiceNodes = async () => {
+      if (!active || inFlight) return;
+      if (document.hidden) {
+        timer = window.setTimeout(refreshServiceNodes, HIDDEN_TAB_REFRESH_DELAY_MS);
+        return;
+      }
+      inFlight = true;
+      let nextDelay = SERVICE_NODE_REFRESH_DELAY_MS;
+      const requestController = new AbortController();
+      controller = requestController;
+      
+      
+      requestTimeout = window.setTimeout(() => requestController.abort(), SERVICE_NODE_REQUEST_TIMEOUT_MS);
+      try {
+        const tip = highestKnownHeightRef.current;
+        const endpoint = tip > 0 ? `/api/service-nodes-live?tip=${tip}` : "/api/service-nodes-live";
+        const response = await fetch(endpoint, { cache: "no-store", signal: requestController.signal });
+        if (!response.ok) throw new Error("Service Node data unavailable");
+        const data = await response.json() as ServiceNodesLiveSnapshot;
+        const counts = data.serviceNodes
+          ? [data.serviceNodes.total, data.serviceNodes.active, data.serviceNodes.funded, data.serviceNodes.exiting, data.serviceNodes.decommissioned]
+          : [];
+        if (!isValidServiceNodesSnapshot(data)
+          || counts.length !== 5 || counts.some((value) => !Number.isInteger(value) || value < 0)) {
+          throw new Error("Invalid Service Node data");
+        }
+        highestKnownHeightRef.current = Math.max(highestKnownHeightRef.current, data.height);
+        if (active) {
+          const accepted = rememberServiceNodesSnapshot(data);
+          if (accepted) setServiceNodesLive((current) => !current || isProvisionalSnapshot(current) || isNewerHeightSnapshot(
+            current.height, current.fetchedAt, accepted.height, accepted.fetchedAt,
+          ) ? accepted : current);
+          nextDelay = data.height < highestKnownHeightRef.current
+            ? SERVICE_NODE_CATCH_UP_RETRY_DELAY_MS
+            : SERVICE_NODE_REFRESH_DELAY_MS;
+        }
+      } catch {
+        // Keep the last complete Service Node snapshot visible
+        nextDelay = TRANSACTION_POOL_REFRESH_DELAY_MS;
+      } finally {
+        window.clearTimeout(requestTimeout);
+        requestTimeout = 0;
+        controller = null;
+        inFlight = false;
+        if (active) {
+          const delay = refreshQueued ? 0 : nextDelay;
+          refreshQueued = false;
+          timer = window.setTimeout(refreshServiceNodes, delay);
+        }
+      }
+    };
+
+    const requestRefresh = () => {
+      if (document.hidden) return;
+      if (inFlight) {
+        refreshQueued = true;
+        return;
+      }
+      window.clearTimeout(timer);
+      void refreshServiceNodes();
+    };
+    const resume = () => { if (!document.hidden) requestRefresh(); };
+
+    serviceNodeRefreshRef.current = requestRefresh;
+    document.addEventListener("visibilitychange", resume);
+    void refreshServiceNodes();
+    return () => {
+      active = false;
+      controller?.abort();
+      window.clearTimeout(requestTimeout);
+      window.clearTimeout(timer);
+      if (serviceNodeRefreshRef.current === requestRefresh) serviceNodeRefreshRef.current = null;
+      document.removeEventListener("visibilitychange", resume);
+    };
+  }, []);
 
   useEffect(() => {
     try {
@@ -438,7 +1078,7 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
       setBlockPageSize(valid(sizes.blocks));
       setTransactionPageSize(valid(sizes.transactions));
       setQuorumPageSize(valid(sizes.quorums));
-    } catch { setPageSizePreferencesLoaded(true); return; }
+    } catch {  }
     setPageSizePreferencesLoaded(true);
   }, []);
 
@@ -449,13 +1089,29 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
         blocks: blockPageSize, transactions: transactionPageSize,
         quorums: quorumPageSize,
       }));
-    } catch { return; }
+    } catch {  }
   }, [pageSizePreferencesLoaded, blockPageSize, transactionPageSize, quorumPageSize]);
+
+  useEffect(() => {
+    if (!pageSizePreferencesLoaded || serviceNodesOnly) return;
+    const restored = readClientSnapshot(CLIENT_CHAIN_SNAPSHOT_KEY, isValidChainSnapshot);
+    if (!restored) return;
+    const matchesSelection = restored.pagination.blockPage === blockPage
+      && restored.pagination.transactionPage === transactionPage
+      && restored.pagination.pageSize === blockPageSize
+      && restored.pagination.transactionScanSize === Math.max(160, transactionPageSize * 32)
+      && restored.quorums.page === quorumPage
+      && restored.quorums.pageSize === quorumPageSize;
+    if (!matchesSelection) return;
+    const accepted = rememberChainSnapshot(restored);
+    if (!accepted) return;
+    setSnapshot((current) => current ?? accepted);
+  }, [pageSizePreferencesLoaded, serviceNodesOnly, blockPage, transactionPage, quorumPage,
+    blockPageSize, transactionPageSize, quorumPageSize]);
 
   const changeQuorumPage = (nextPage: number) => {
     if (quorumLoading || nextPage < 0) return;
     setQuorumLoading(true);
-    setQuorumError("");
     setQuorumPage(nextPage);
   };
 
@@ -463,10 +1119,13 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
     setQuorumLoading(true);
     setQuorumPageSize(nextPageSize);
     setQuorumPage(0);
-    setQuorumError("");
   };
 
-  const blocks: Block[] = snapshot ? snapshot.blocks.map((block) => ({
+  const blocksSelectionMatches = snapshot?.pagination.blockPage === blockPage
+    && snapshot.pagination.pageSize === blockPageSize;
+  const transactionsSelectionMatches = snapshot?.pagination.transactionPage === transactionPage
+    && snapshot.pagination.transactionScanSize === Math.max(160, transactionPageSize * 32);
+  const blocks: Block[] = snapshot && blocksSelectionMatches ? snapshot.blocks.map((block) => ({
     height: block.height,
     age: age(block.timestamp),
     hash: block.hash,
@@ -479,7 +1138,7 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
     outputs: block.outputs,
   })) : [];
 
-  const transactions: Transaction[] = snapshot ? snapshot.transactions.map((tx) => ({
+  const transactions: Transaction[] = snapshot && transactionsSelectionMatches ? snapshot.transactions.map((tx) => ({
     hash: tx.hash,
     age: age(tx.timestamp),
     block: tx.block,
@@ -493,28 +1152,77 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
   })) : [];
 
   const particles = useMemo(() => Array.from({ length: 24 }, (_, i) => i), []);
-  const liveNetwork = snapshot?.network ?? networkPreview?.network ?? null;
+  const liveNetwork = !networkPreview
+    ? snapshot?.network ?? null
+    : !snapshot || (isProvisionalSnapshot(snapshot) && !isProvisionalSnapshot(networkPreview)) || (
+      isProvisionalSnapshot(snapshot) === isProvisionalSnapshot(networkPreview) && isNewerHeightSnapshot(
+      snapshot.network.height, snapshot.fetchedAt, networkPreview.network.height, networkPreview.fetchedAt,
+    )) ? networkPreview.network : snapshot.network;
   const transactionPool = transactionPoolSnapshot
     ?? (snapshot?.transactionPool.available ? snapshot.transactionPool : null);
-  const currentServiceNodeTotal = snapshot?.serviceNodes.total ?? 0;
-  const lockedDeregisteredServiceNodeTotal = deregisteredSnapshot?.live ? deregisteredSnapshot.total : null;
-  const statusTotal = lockedDeregisteredServiceNodeTotal === null ? null : currentServiceNodeTotal + lockedDeregisteredServiceNodeTotal;
-  const unlockingServiceNodes = snapshot?.serviceNodes.exiting ?? 0;
-  const decommissionedServiceNodes = snapshot?.serviceNodes.decommissioned ?? 0;
-  const activeServiceNodes = snapshot?.serviceNodes.nodes.filter((node) => node.active && !node.unlocking).length ?? 0;
-  const otherServiceNodes = Math.max(0, currentServiceNodeTotal - activeServiceNodes - unlockingServiceNodes - decommissionedServiceNodes);
-  const statusShare = (value: number) => statusTotal !== null && statusTotal > 0 ? (value / statusTotal) * 100 : 0;
+  const chainServiceNodesSnapshot: ServiceNodesLiveSnapshot | null = snapshot ? {
+    live: snapshot.live,
+    fetchedAt: snapshot.fetchedAt,
+    height: snapshot.serviceNodesHeight,
+    serviceNodes: snapshot.serviceNodes,
+  } : null;
+  if (chainServiceNodesSnapshot && isProvisionalSnapshot(snapshot)) provisionalClientSnapshots.add(chainServiceNodesSnapshot);
+  const selectedServiceNodesSnapshot = !serviceNodesLive
+    ? chainServiceNodesSnapshot
+    : !chainServiceNodesSnapshot || (isProvisionalSnapshot(chainServiceNodesSnapshot) && !isProvisionalSnapshot(serviceNodesLive)) || (
+      isProvisionalSnapshot(chainServiceNodesSnapshot) === isProvisionalSnapshot(serviceNodesLive) && isNewerHeightSnapshot(
+      chainServiceNodesSnapshot.height, chainServiceNodesSnapshot.fetchedAt,
+      serviceNodesLive.height, serviceNodesLive.fetchedAt,
+    )) ? serviceNodesLive : chainServiceNodesSnapshot;
+  const serviceNodes = selectedServiceNodesSnapshot?.serviceNodes ?? null;
+  const selectedLiveQuorums = quorumLiveSnapshot?.page === quorumPage
+    && quorumLiveSnapshot.pageSize === quorumPageSize ? quorumLiveSnapshot : null;
+  const selectedChainQuorums = snapshot?.quorums.page === quorumPage
+    && snapshot.quorums.pageSize === quorumPageSize ? snapshot.quorums : null;
+  const liveQuorumHeight = selectedLiveQuorums?.records[0]?.height ?? -1;
+  const chainQuorumHeight = selectedChainQuorums?.records[0]?.height ?? -1;
+  const quorums = selectedLiveQuorums && (
+    !selectedChainQuorums
+    || (isProvisionalSnapshot(snapshot) && !isProvisionalSnapshot(selectedLiveQuorums))
+    || (isProvisionalSnapshot(snapshot) === isProvisionalSnapshot(selectedLiveQuorums) && (liveQuorumHeight > chainQuorumHeight
+    || (liveQuorumHeight === chainQuorumHeight
+      && selectedLiveQuorums.records.length >= selectedChainQuorums.records.length)))
+  )
+    ? selectedLiveQuorums
+    : selectedChainQuorums;
+  const latestQuorum = quorums?.records[0] ?? null;
+  const serviceNodeHeight = selectedServiceNodesSnapshot?.height ?? 0;
+  const currentServiceNodeTotal = serviceNodes?.total ?? 0;
+  const displayedDeregistration = deregisteredSnapshot?.live
+    ? deregisteredSnapshot
+    : snapshot?.deregisteredServiceNodes;
+  const deregisteredNodes = displayedDeregistration?.nodes ?? [];
+  const deregisteredTotal = displayedDeregistration?.total ?? null;
+  const deregisteredIndexedThrough = displayedDeregistration?.indexedThrough ?? null;
+  const lockedDeregisteredServiceNodeTotal = serviceNodes
+    ? deregisteredNodes.filter((node) => node.unlockedAt > serviceNodeHeight).length
+    : 0;
+  const statusTotal = currentServiceNodeTotal + lockedDeregisteredServiceNodeTotal;
+  const awaitingServiceNodeRows = Array.isArray(serviceNodes?.awaitingNodes)
+    ? serviceNodes.awaitingNodes
+    : [];
+  const unlockingServiceNodes = serviceNodes?.exiting ?? 0;
+  const decommissionedServiceNodes = serviceNodes?.decommissioned ?? 0;
+  const activeServiceNodes = serviceNodes?.active ?? 0;
+  const awaitingServiceNodes = serviceNodes
+    ? Math.max(0, serviceNodes.total - serviceNodes.funded)
+    : 0;
+  const statusShare = (value: number) => statusTotal > 0 ? (value / statusTotal) * 100 : 0;
   const activeEnd = statusShare(activeServiceNodes);
-  const unlockingEnd = activeEnd + statusShare(unlockingServiceNodes);
-  const offlineEnd = unlockingEnd + statusShare(decommissionedServiceNodes);
-  const deregisteredEnd = offlineEnd + statusShare(lockedDeregisteredServiceNodeTotal ?? 0);
+  const awaitingEnd = activeEnd + statusShare(awaitingServiceNodes);
+  const offlineEnd = awaitingEnd + statusShare(decommissionedServiceNodes);
   const minedSupply = snapshot?.network.minedSupply ?? null;
-  const stakingRatio = snapshot && minedSupply && minedSupply > 0
-    ? (snapshot.serviceNodes.totalContributed / minedSupply) * 100
+  const stakingRatio = serviceNodes && minedSupply && minedSupply > 0
+    ? (serviceNodes.totalContributed / minedSupply) * 100
     : null;
   const stakingRatioWidth = Math.min(100, Math.max(0, stakingRatio ?? 0));
   const filteredServiceNodes = useMemo(() => {
-    const nodes = [...(snapshot?.serviceNodes.nodes || [])].sort((a, b) =>
+    const nodes = [...(serviceNodes?.nodes || [])].sort((a, b) =>
       b.lastRewardAt - a.lastRewardAt
       || b.registeredAt - a.registeredAt
       || a.publicKey.localeCompare(b.publicKey),
@@ -522,23 +1230,22 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
     const searchTerm = serviceNodeQuery.trim().toLowerCase();
     if (!searchTerm) return nodes;
     return nodes.filter((node) => node.publicKey.toLowerCase().includes(searchTerm));
-  }, [snapshot, serviceNodeQuery]);
+  }, [serviceNodes, serviceNodeQuery]);
   const serviceNodeLastPage = Math.max(0, Math.ceil(filteredServiceNodes.length / serviceNodePageSize) - 1);
   const paginatedServiceNodes = useMemo(
     () => filteredServiceNodes.slice(serviceNodePage * serviceNodePageSize, (serviceNodePage + 1) * serviceNodePageSize),
     [filteredServiceNodes, serviceNodePage, serviceNodePageSize],
   );
   const homepageServiceNodes = useMemo(
-    () => [...(snapshot?.serviceNodes.nodes || [])]
+    () => [...(serviceNodes?.nodes || [])]
       .sort((a, b) => b.lastRewardAt - a.lastRewardAt || b.registeredAt - a.registeredAt || a.publicKey.localeCompare(b.publicKey))
       .slice(0, 5),
-    [snapshot],
+    [serviceNodes],
   );
 
   useEffect(() => {
     if (serviceNodePage > serviceNodeLastPage) setServiceNodePage(serviceNodeLastPage);
   }, [serviceNodePage, serviceNodeLastPage]);
-  const deregisteredNodes = deregisteredSnapshot?.nodes || [];
   const deregisteredNodeLastPage = Math.max(0, Math.ceil(deregisteredNodes.length / deregisteredNodePageSize) - 1);
   const paginatedDeregisteredNodes = useMemo(
     () => deregisteredNodes.slice(deregisteredNodePage * deregisteredNodePageSize, (deregisteredNodePage + 1) * deregisteredNodePageSize),
@@ -550,11 +1257,11 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
   }, [deregisteredNodePage, deregisteredNodeLastPage]);
 
   useEffect(() => {
-    if (!statisticsOnly || !snapshot || lifecycleInitialized) return;
-    if (snapshot.serviceNodes.exiting > 0) setLifecycleView("unlocking");
-    else if (snapshot.serviceNodes.decommissioned > 0) setLifecycleView("decommissioned");
+    if (!statisticsOnly || !serviceNodes || lifecycleInitialized) return;
+    if (serviceNodes.exiting > 0) setLifecycleView("unlocking");
+    else if (serviceNodes.decommissioned > 0) setLifecycleView("decommissioned");
     setLifecycleInitialized(true);
-  }, [statisticsOnly, snapshot, lifecycleInitialized]);
+  }, [statisticsOnly, serviceNodes, lifecycleInitialized]);
 
   function beginDetailRequest(title: string, kind: DetailKind, message: string) {
     detailAbortController.current?.abort();
@@ -581,11 +1288,11 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
     return () => window.cancelAnimationFrame(frame);
   }, [detailRenderKey]);
 
-  async function openBlock(id: number | string, updateHistory = true) {
+  async function openBlock(id: number | string, updateHistory = true, searchResponse?: Response) {
     const request = beginDetailRequest("Block Details", "block", "Reading the selected block from the Judecoin mainnet.");
     if (updateHistory) window.history.pushState(null, "", `#block-${String(id)}`);
     try {
-      const response = await fetch(`/api/block?id=${encodeURIComponent(String(id))}`, { signal: request.signal });
+      const response = searchResponse ?? await fetch(`/api/block?id=${encodeURIComponent(String(id))}`, { signal: request.signal });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Block lookup failed");
       resolveDetailRequest(request.requestId, { title: "Block Details", kind: "block", fullPage: true, rows: [], sections: [
@@ -630,16 +1337,18 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
     else if (window.location.hash.startsWith("#node-")) window.history.replaceState(null, "", "#staking");
   }
 
-  async function openTransaction(hash: string, knownType?: string, updateHistory = true) {
+  async function openTransaction(hash: string, knownType?: string, updateHistory = true, searchResponse?: Response) {
     const request = beginDetailRequest("Transaction Details", "transaction", "Reading public transaction metadata from the Judecoin mainnet.");
     if (updateHistory) window.history.pushState(null, "", `#tx-${hash}`);
     try {
-      const response = await fetch(`/api/transaction?hash=${encodeURIComponent(hash)}`, { signal: request.signal });
+      const response = searchResponse ?? await fetch(`/api/transaction?hash=${encodeURIComponent(hash)}`, { signal: request.signal });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Transaction lookup failed");
-      const confirmations = Number.isFinite(data.confirmations) ? data.confirmations : snapshot && data.blockHeight ? Math.max(0, snapshot.network.height - data.blockHeight + 1) : 0;
+      const confirmations = Number.isFinite(data.confirmations) ? data.confirmations : liveNetwork && data.blockHeight ? Math.max(0, liveNetwork.height - data.blockHeight + 1) : 0;
       const feePerKb = data.size > 0 ? data.fee / (data.size / 1000) : 0;
-
+      
+      
+      
       const transactionType = knownType || data.txType || (data.transactionType === 0 ? "transfer" : "state-change");
       resolveDetailRequest(request.requestId, { title: "Transaction Details", kind: "transaction", fullPage: true, rows: [], sections: [
         { kicker: "IDENTIFIERS", title: "Transaction Identity", rows: [
@@ -669,19 +1378,19 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
     }
   }
 
-  async function openServiceNode(key: string, updateHistory = true) {
+  async function openServiceNode(key: string, updateHistory = true, searchResponse?: Response) {
     const request = beginDetailRequest("Service Node Details", "service-node", "Reading the selected Service Node record from the Judecoin mainnet.");
     if (updateHistory) window.history.pushState(null, "", `#node-${key}`);
     try {
-      const response = await fetch(`/api/service-node?key=${encodeURIComponent(key)}`, { signal: request.signal });
+      const response = searchResponse ?? await fetch(`/api/service-node?key=${encodeURIComponent(key)}`, { signal: request.signal });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Service-node lookup failed");
       const contributorRows = (data.contributors || []).flatMap((contributor: { address: string; amount: number }, index: number) => [
         ...(contributor.address ? [{ label: `CONTRIBUTOR ${index + 1} ADDRESS`, value: contributor.address }] : []),
         ...(Number.isFinite(Number(contributor.amount)) ? [{ label: `CONTRIBUTOR ${index + 1} STAKE`, value: `${jude(contributor.amount)} JUDE` }] : []),
       ]);
-      const pendingUnlock = !data.historical && Number(data.unlockHeight) > 0 && (!snapshot || Number(data.unlockHeight) > snapshot.network.height);
-      const remainingUnlockBlocks = snapshot && pendingUnlock ? Math.max(0, Number(data.unlockHeight) - snapshot.network.height) : 0;
+      const pendingUnlock = !data.historical && Number(data.unlockHeight) > 0 && (serviceNodeHeight <= 0 || Number(data.unlockHeight) > serviceNodeHeight);
+      const remainingUnlockBlocks = serviceNodeHeight > 0 && pendingUnlock ? Math.max(0, Number(data.unlockHeight) - serviceNodeHeight) : 0;
       const identityRows = [
         { label: "SERVICE NODE PUBLIC KEY", value: data.publicKey },
         { label: "STATUS", value: data.historical ? "Deregistered" : pendingUnlock ? "Pending Unlock" : data.unlockHeight ? "Unlock Height Reached" : data.active ? "Active" : data.funded ? "Decommissioned" : "Awaiting contributions" },
@@ -693,7 +1402,7 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
         ...(Number(data.unlockHeight) > 0 ? [{ label: "STAKE OUTPUT UNLOCK HEIGHT", value: compact(data.unlockHeight) }] : []),
         ...(Number.isFinite(Number(data.contributions)) ? [{ label: "STAKE OUTPUTS", value: compact(data.contributions) }] : []),
         { label: "RECORD STATUS", value: "Deregistration recorded on chain" },
-        ...(snapshot && Number(data.unlockHeight) > 0 ? [{ label: "STAKE STATUS", value: snapshot.network.height >= data.unlockHeight ? "Released" : `Locked until block ${compact(data.unlockHeight)}` }] : []),
+        ...(serviceNodeHeight > 0 && Number(data.unlockHeight) > 0 ? [{ label: "STAKE STATUS", value: serviceNodeHeight >= data.unlockHeight ? "Released" : `Locked until block ${compact(data.unlockHeight)}` }] : []),
       ] : [
         { label: "TOTAL STAKE", value: `${jude(data.totalContributed)} JUDE` },
         { label: "STAKING REQUIREMENT", value: `${jude(data.stakingRequirement)} JUDE` },
@@ -703,11 +1412,11 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
         ...(data.unlockHeight ? [
           { label: "UNLOCK STATUS", value: pendingUnlock ? "Scheduled — waiting for the unlock block" : "Scheduled unlock height reached" },
           { label: "SCHEDULED UNLOCK BLOCK", value: compact(data.unlockHeight) },
-          ...(snapshot ? [
-            { label: "CURRENT CHAIN HEIGHT", value: compact(snapshot.network.height) },
+          ...(serviceNodeHeight > 0 && liveNetwork ? [
+            { label: "CURRENT CHAIN HEIGHT", value: compact(serviceNodeHeight) },
             { label: "BLOCKS REMAINING", value: compact(remainingUnlockBlocks) },
-            { label: "ESTIMATED TIME REMAINING", value: estimatedBlockWait(remainingUnlockBlocks, snapshot.network.targetSeconds) },
-            { label: "ESTIMATED UNLOCK TIME (UTC)", value: estimatedBlockDate(snapshot.network.height, Number(data.unlockHeight), snapshot.network.targetSeconds, snapshot.network.latestBlockTimestamp) },
+            { label: "ESTIMATED TIME REMAINING", value: estimatedBlockWait(remainingUnlockBlocks, liveNetwork.targetSeconds) },
+            { label: "ESTIMATED UNLOCK TIME (UTC)", value: estimatedBlockDate(serviceNodeHeight, Number(data.unlockHeight), liveNetwork.targetSeconds, liveNetwork.latestBlockTimestamp) },
           ] : []),
         ] : []),
         ...(Number(data.lastUptimeProof) > 0 ? [{ label: "LAST UPTIME PROOF", value: new Date(data.lastUptimeProof * 1000).toLocaleString("en-US", { timeZoneName: "short" }) }] : []),
@@ -755,11 +1464,11 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
     setMessage("Searching the public chain…");
     try {
       const blockResponse = await fetch(`/api/block?id=${encodeURIComponent(identifier)}`);
-      if (blockResponse.ok) { setMessage(""); await openBlock(identifier); return; }
+      if (blockResponse.ok) { setMessage(""); await openBlock(identifier, true, blockResponse); return; }
       const transactionResponse = await fetch(`/api/transaction?hash=${encodeURIComponent(identifier)}`);
-      if (transactionResponse.ok) { setMessage(""); await openTransaction(identifier); return; }
+      if (transactionResponse.ok) { setMessage(""); await openTransaction(identifier, undefined, true, transactionResponse); return; }
       const nodeResponse = await fetch(`/api/service-node?key=${encodeURIComponent(identifier)}`);
-      if (nodeResponse.ok) { setMessage(""); await openServiceNode(identifier); return; }
+      if (nodeResponse.ok) { setMessage(""); await openServiceNode(identifier, true, nodeResponse); return; }
       setMessage("No block, transaction, or Service Node matched that identifier.");
     } catch {
       setMessage("Search is temporarily unavailable. Please try again.");
@@ -823,20 +1532,20 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
       </section>
 
       <section className="metrics shell" id="network" aria-busy={connection === "loading"}>
-        <span className="sr-only" role="status" aria-live="polite">{connection === "loading" ? "Connecting to Judecoin mainnet and loading live network data." : connection === "offline" ? "Live network data is temporarily unavailable." : "Live Judecoin mainnet data loaded."}</span>
-        <article><small>{"CHAIN HEIGHT"}</small><strong className="block-height">{liveNetwork ? compact(liveNetwork.height) : connection === "loading" ? <MetricSkeleton width="short" /> : "—"}</strong><span className={connection === "offline" ? "offline" : !liveNetwork ? undefined : liveNetwork.synced ? "trend" : "warning"}>{connection === "offline" ? "Network data unavailable" : !liveNetwork ? "Connecting to mainnet" : liveNetwork.synced ? "Mainnet · synced" : "Mainnet · delayed"}</span></article>
-        <article><small>{"NETWORK HASH RATE"}</small><strong>{liveNetwork ? <>{(liveNetwork.hashrate / 1e3).toFixed(2)} <i>kH/s</i></> : connection === "loading" ? <MetricSkeleton /> : "—"}</strong><span>{liveNetwork ? "Estimated from difficulty and target time" : "Loading live network data"}</span></article>
-        <article><small>{"NETWORK DIFFICULTY"}</small><strong>{liveNetwork ? difficulty(liveNetwork.difficulty) : connection === "loading" ? <MetricSkeleton /> : "—"}</strong><span>{liveNetwork ? "Reported by the protocol" : "Loading live network data"}</span></article>
-        <article><small>{"TARGET BLOCK TIME"}</small><strong>{liveNetwork ? <>{liveNetwork.targetSeconds} <i>{"sec"}</i></> : connection === "loading" ? <MetricSkeleton width="short" /> : "—"}</strong><span>{liveNetwork ? "Protocol target" : "Loading live network data"}</span></article>
-        <article><small>{"LATEST BLOCK AGE"}</small><strong>{liveNetwork ? age(liveNetwork.latestBlockTimestamp) : connection === "loading" ? <MetricSkeleton /> : "—"}</strong><span className={connection === "offline" ? "offline" : !liveNetwork ? undefined : liveNetwork.synced ? "trend" : "warning"}>{!liveNetwork ? "Loading latest block" : liveNetwork.synced ? "Time since latest block" : connection === "offline" ? "Latest block unavailable" : "Chain data may be delayed"}</span></article>
-        <article><small>{"SERVICE NODES"}</small><strong>{snapshot ? compact(snapshot.serviceNodes.total) : connection === "offline" ? "—" : <MetricSkeleton width="short" />}</strong><span>{snapshot ? "Active on mainnet" : connection === "offline" ? "Network data unavailable" : "Loading Service Nodes"}</span></article>
+        <span className="sr-only" role="status" aria-live="polite">{connection === "live" ? "Live Judecoin mainnet values verified." : "Displaying zero or the last verified values while the mainnet refresh completes."}</span>
+        <article><small>{"CHAIN HEIGHT"}</small><strong className="block-height notranslate" translate="no">{liveNetwork ? compact(liveNetwork.height) : "0"}</strong><span className={connection === "live" && liveNetwork?.synced ? "trend" : undefined}>{!liveNetwork ? "No verified snapshot · initial values" : connection !== "live" ? "Last verified mainnet snapshot" : liveNetwork.synced ? "Mainnet · synced" : "Mainnet · delayed"}</span></article>
+        <article><small>{"NETWORK HASH RATE"}</small><strong className="notranslate" translate="no">{(liveNetwork?.hashrate ? liveNetwork.hashrate / 1e3 : 0).toFixed(2)} <i>kH/s</i></strong><span>{"Estimated from difficulty and target time"}</span></article>
+        <article><small>{"NETWORK DIFFICULTY"}</small><strong className="notranslate" translate="no">{liveNetwork ? difficulty(liveNetwork.difficulty) : "0"}</strong><span>{"Reported by the protocol"}</span></article>
+        <article><small>{"TARGET BLOCK TIME"}</small><strong className="notranslate" translate="no">{liveNetwork?.targetSeconds ?? 0} <i>{"sec"}</i></strong><span>{"Protocol target"}</span></article>
+        <article><small>{"LATEST BLOCK AGE"}</small><strong className="notranslate" translate="no">{liveNetwork ? age(liveNetwork.latestBlockTimestamp) : "0"}</strong><span className={liveNetwork?.synced ? "trend" : undefined}>{"Time since latest block"}</span></article>
+        <article><small>{"SERVICE NODES"}</small><strong className="notranslate" translate="no">{compact(serviceNodes?.active ?? 0)}</strong><span>{"Active on mainnet"}</span></article>
         <article className="block-size-card">
           <div className="block-size-heading"><small>{"BLOCK SIZE"}</small>{liveNetwork && liveNetwork.blockSizeLimit > 0 && <b className="block-size-ratio">{`${((liveNetwork.blockSizeMedian / liveNetwork.blockSizeLimit) * 100).toFixed(1)}%`}</b>}</div>
-          <strong className="block-size-value">{liveNetwork ? bytes(liveNetwork.blockSizeMedian) : connection === "loading" ? <MetricSkeleton width="wide" /> : "—"}</strong>
+          <strong className="block-size-value notranslate" translate="no">{liveNetwork ? bytes(liveNetwork.blockSizeMedian) : "0 B"}</strong>
           {liveNetwork && <span className="block-size-limit">{`Limit ${bytes(liveNetwork.blockSizeLimit)}`}</span>}
-          <span className="block-size-caption">{liveNetwork ? "Median / protocol limit" : "Loading live network data"}</span>
+          <span className="block-size-caption">{"Median / protocol limit"}</span>
         </article>
-        <article><small>{"PROTOCOL VERSION"}</small><strong>{liveNetwork?.protocol ?? (connection === "loading" ? <MetricSkeleton width="wide" /> : "—")}</strong><span>{liveNetwork ? `Hard fork v${liveNetwork.hardFork}` : connection === "offline" ? "Version unavailable" : "Loading protocol version"}</span></article>
+        <article><small>{"PROTOCOL VERSION"}</small><strong className="notranslate" translate="no">{liveNetwork?.protocol ?? "0"}</strong><span>{`Hard fork v${liveNetwork?.hardFork ?? 0}`}</span></article>
       </section>
 
       <section className="tx-type-legend shell" aria-label="Transaction type legend">
@@ -867,7 +1576,7 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
       <section className={`stream shell ${transactionPool?.available && transactionPool.count ? "" : "first-data-section"}`}>
         <div className="section-heading" id="blocks">
           <div><h2>{"Latest Blocks"}</h2></div>
-          <PaginationControls page={blockPage} lastPage={snapshot ? Math.floor(snapshot.network.height / blockPageSize) : 0} pageSize={blockPageSize} onPageChange={setBlockPage} onPageSizeChange={(size) => { setBlockPageSize(size); setBlockPage(0); }} onPrefetchPage={(page) => prefetchSnapshot({ blockPage: page })} />
+          <PaginationControls page={blockPage} lastPage={liveNetwork ? Math.floor(liveNetwork.height / blockPageSize) : 0} pageSize={blockPageSize} onPageChange={setBlockPage} onPageSizeChange={(size) => { setBlockPageSize(size); setBlockPage(0); }} onPrefetchPage={(page) => prefetchSnapshot({ blockPage: page })} />
         </div>
         <div className="table-card blocks-table">
           <div className="table-head"><span>{"HEIGHT"}</span><span>{"AGE [h:m:s]"}</span><span>{"TYPE"}</span><span>{"BLOCK HASH"}</span><span>{"TXS"}</span><span>{"SIZE"}</span><span>{"DIFFICULTY"}</span><span>{"FEE (JUDE)"}</span><span>{"REWARD (JUDE)"}</span><span>{"IN/OUT"}</span></div>
@@ -877,14 +1586,14 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
               <span>{block.age}</span><TxTypeBadge type="block-reward" compact iconOnly /><span className="block-hash detail-link">{hashPreview(block.hash)}</span><span>{block.txs}</span><span>{block.size}</span><span>{block.difficulty}</span><span>{block.fee == null ? "N/A" : atomicJude(block.fee)}</span><span>{block.reward == null ? "N/A" : atomicJude(block.reward)}</span><span>{inOut(block.inputs, block.outputs)}</span>
             </div>
           ))}
-          {!snapshot && <div className="nodes-loading">{connection === "offline" ? "Live block data is unavailable. No preview data is shown." : "Loading live block data…"}</div>}
+          {(!snapshot || !blocksSelectionMatches) && <div className="nodes-loading notranslate" translate="no">{"0 BLOCK RECORDS · No verified snapshot for this page yet"}</div>}
         </div>
       </section>
 
       <section className="stream shell" id="transactions">
         <div className="section-heading">
           <div><h2>{"Latest Transactions"}</h2></div>
-          <div className="heading-actions"><PaginationControls page={transactionPage} lastPage={snapshot ? Math.floor(snapshot.network.height / snapshot.pagination.transactionScanSize) : 0} pageSize={transactionPageSize} onPageChange={setTransactionPage} onPageSizeChange={(size) => { setTransactionPageSize(size); setTransactionPage(0); }} onPrefetchPage={(page) => prefetchSnapshot({ transactionPage: page })} /></div>
+          <div className="heading-actions"><PaginationControls page={transactionPage} lastPage={liveNetwork && snapshot ? Math.floor(liveNetwork.height / snapshot.pagination.transactionScanSize) : 0} pageSize={transactionPageSize} onPageChange={setTransactionPage} onPageSizeChange={(size) => { setTransactionPageSize(size); setTransactionPage(0); }} onPrefetchPage={(page) => prefetchSnapshot({ transactionPage: page })} /></div>
         </div>
         <div className="table-card tx-table">
           <div className="table-head"><span>{"BLOCK"}</span><span>{"AGE [h:m:s]"}</span><span>{"TYPE"}</span><span>{"TRANSACTION HASH"}</span><span>{"SIZE"}</span><span>{"CONFIRMATIONS"}</span><span>{"FEE (JUDE)"}</span><span>{"IN/OUT"}</span></div>
@@ -893,7 +1602,7 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
               <span className="height"><i>{index === 0 ? "●" : "◆"}</i>{compact(tx.block)}</span><span>{tx.age}</span><TxTypeBadge type={tx.txType} compact iconOnly /><span className="tx-hash detail-link">{hashPreview(tx.hash)}</span><span>{tx.size}</span><span>{tx.confirmations}</span><span>{tx.fee == null ? "N/A" : atomicJude(tx.fee)}</span><span>{inOut(tx.inputs, tx.outputs)}</span>
             </div>
           ))}
-          {!snapshot && <div className="nodes-loading">{connection === "offline" ? "Live transaction data is unavailable. No preview data is shown." : "Loading live transaction data…"}</div>}
+          {(!snapshot || !transactionsSelectionMatches) && <div className="nodes-loading notranslate" translate="no">{"0 TRANSACTION RECORDS · No verified snapshot for this page yet"}</div>}
         </div>
       </section>
       </>}
@@ -904,76 +1613,75 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
             <h1>{"Judecoin network,"}<br /><em>{"at a glance."}</em></h1>
             <p>{"Explore Judecoin blocks, transactions, Service Nodes, staking, and network activity in one place."}</p>
           </div>
-          <div className="network-reactor" aria-label={`${snapshot?.serviceNodes.active ?? 0} active service nodes`}>
+          <div className="network-reactor" aria-label={`${serviceNodes?.active ?? 0} active service nodes`}>
             <i className="reactor-grid" /><i className="reactor-beam" /><i className="reactor-base" />
             <div className="reactor-cube"><i className="cube-front" /><i className="cube-back" /><i className="cube-left" /><i className="cube-right" /><i className="cube-top" /><i className="cube-bottom" /></div>
             <i className="reactor-ring ring-one" /><i className="reactor-ring ring-two" /><i className="reactor-ring ring-three" />
             {Array.from({ length: 8 }, (_, index) => <i className="reactor-particle" key={index} style={{ "--particle": index } as React.CSSProperties} />)}
-            <div className="reactor-value"><strong>{snapshot ? compact(snapshot.serviceNodes.active) : "N/A"}</strong><span>ACTIVE SERVICE NODES</span></div>
+            <div className="reactor-value"><strong className="notranslate" translate="no">{compact(serviceNodes?.active ?? 0)}</strong><span>ACTIVE SERVICE NODES</span></div>
           </div>
         </header>
 
         <div className="statistics-primary-grid">
-          <article className="stat-command stat-height"><small>{"CHAIN HEIGHT"}</small><strong className="block-height">{snapshot ? compact(snapshot.network.height) : "N/A"}</strong></article>
-          <article className="stat-command"><small>{"NETWORK HASH RATE"}</small><strong>{snapshot ? `${(snapshot.network.hashrate / 1e3).toFixed(2)} kH/s` : "N/A"}</strong></article>
-          <article className="stat-command"><small>{"NETWORK DIFFICULTY"}</small><strong>{snapshot ? difficulty(snapshot.network.difficulty) : "N/A"}</strong></article>
-          <article className="stat-command"><small>{"PENDING TRANSACTIONS"}</small><strong>{transactionPool?.available ? compact(transactionPool.count) : connection === "offline" ? "N/A" : "Loading…"}</strong></article>
+          <article className="stat-command stat-height"><small>{"CHAIN HEIGHT"}</small><strong className="block-height notranslate" translate="no">{compact(liveNetwork?.height ?? 0)}</strong></article>
+          <article className="stat-command"><small>{"NETWORK HASH RATE"}</small><strong className="notranslate" translate="no">{`${((liveNetwork?.hashrate ?? 0) / 1e3).toFixed(2)} kH/s`}</strong></article>
+          <article className="stat-command"><small>{"NETWORK DIFFICULTY"}</small><strong className="notranslate" translate="no">{liveNetwork ? difficulty(liveNetwork.difficulty) : "0"}</strong></article>
+          <article className="stat-command"><small>{"PENDING TRANSACTIONS"}</small><strong className="notranslate" translate="no">{compact(transactionPool?.available ? transactionPool.count : 0)}</strong></article>
         </div>
 
         <div className="statistics-dashboard">
           <section className="stats-panel node-health-panel">
             <header><div><h2>{"Service Node Status"}</h2></div></header>
             <div className="node-health-content">
-              <div className="status-pie" style={{ background: statusTotal === null || statusTotal === 0 ? "#233a34" : `conic-gradient(#64ffd0 0 ${activeEnd}%, #5fb8ff ${activeEnd}% ${unlockingEnd}%, #f1b956 ${unlockingEnd}% ${offlineEnd}%, #ef677b ${offlineEnd}% ${deregisteredEnd}%, #738983 ${deregisteredEnd}% 100%)` }}>
+              <div className="status-pie" style={{ background: serviceNodes ? `conic-gradient(#64ffd0 0 ${activeEnd}%, #b58aff ${activeEnd}% ${awaitingEnd}%, #f1b956 ${awaitingEnd}% ${offlineEnd}%, #ef677b ${offlineEnd}% 100%)` : "rgba(22,58,49,.55)" }}>
                 <i className="pie-grid" /><i className="pie-sweep" />
-                <div className="pie-core"><strong>{snapshot && statusTotal !== null ? compact(statusTotal) : "N/A"}</strong><span>{"TOTAL SHOWN"}</span></div>
+                <div className="pie-core"><strong className="notranslate" translate="no">{compact(serviceNodes ? statusTotal : 0)}</strong><span>{"TOTAL SHOWN"}</span></div>
               </div>
               <div className="status-breakdown">
                 <dl className="status-ledger">
-                  <div><dt><i className="active-dot" />{"Active"}</dt><dd>{snapshot ? compact(activeServiceNodes) : "N/A"}</dd></div>
-                  <div><dt><i className="unlock-dot" />{"Unlocking"}</dt><dd>{snapshot ? compact(unlockingServiceNodes) : "N/A"}</dd></div>
-                  <div><dt><i className="offline-dot" />{"Decommissioned"}</dt><dd>{snapshot ? compact(decommissionedServiceNodes) : "N/A"}</dd></div>
-                  <div className="history-entry" title="Deregistered nodes whose stake remains locked on chain"><dt><i className="removed-dot" />{"Deregistered · Stake locked"}</dt><dd>{lockedDeregisteredServiceNodeTotal !== null ? compact(lockedDeregisteredServiceNodeTotal) : "N/A"}</dd></div>
-                  {otherServiceNodes > 0 && <div><dt>{"Other current nodes"}</dt><dd>{compact(otherServiceNodes)}</dd></div>}
+                  <div><dt><i className="active-dot" />{"Active"}</dt><dd className="notranslate" translate="no">{compact(serviceNodes ? activeServiceNodes : 0)}</dd></div>
+                  <div title="Unlocking nodes remain included in Active until they leave the current Service Node list"><dt><i className="unlock-dot" />{"Unlocking · included in Active"}</dt><dd className="notranslate" translate="no">{compact(serviceNodes ? unlockingServiceNodes : 0)}</dd></div>
+                  <div><dt><i className="awaiting-dot" />{"Awaiting contributions"}</dt><dd className="notranslate" translate="no">{compact(serviceNodes ? awaitingServiceNodes : 0)}</dd></div>
+                  <div><dt><i className="offline-dot" />{"Decommissioned"}</dt><dd className="notranslate" translate="no">{compact(serviceNodes ? decommissionedServiceNodes : 0)}</dd></div>
+                  <div className="history-entry" title="Deregistered nodes whose stake remains locked on chain"><dt><i className="removed-dot" />{"Deregistered · Stake locked"}</dt><dd className="notranslate" translate="no">{compact(serviceNodes ? lockedDeregisteredServiceNodeTotal : 0)}</dd></div>
                 </dl>
-                {snapshot && lockedDeregisteredServiceNodeTotal !== null && <p className="status-summary"><b>{compact(currentServiceNodeTotal)}</b>{" current + "}<b>{compact(lockedDeregisteredServiceNodeTotal)}</b>{" deregistered with stake still locked"}</p>}
+                {serviceNodes ? <p className="status-summary" translate="no"><b>{compact(currentServiceNodeTotal)}</b>{" current + "}<b>{compact(lockedDeregisteredServiceNodeTotal)}</b>{" deregistered with stake still locked. "}<b>{compact(unlockingServiceNodes)}</b>{" unlocking nodes remain included in Active."}</p> : <p className="status-summary">No verified snapshot yet · initial values are 0</p>}
               </div>
             </div>
           </section>
 
           <section className="stats-panel staking-panel">
             <header><div><h2>{"Service Node Staking"}</h2></div></header>
-            <div className="stake-total"><span>{"TOTAL SERVICE NODE STAKE"}</span><strong>{snapshot ? <>{jude(snapshot.serviceNodes.totalContributed)} <i>JUDE</i></> : "N/A"}</strong></div>
+            <div className="stake-total"><span>{"TOTAL SERVICE NODE STAKE"}</span><strong className="notranslate" translate="no">{jude(serviceNodes?.totalContributed ?? 0)} <i>JUDE</i></strong></div>
             <div className={`stake-progress${stakingRatio == null ? " unavailable" : ""}`}><i style={{ width: `${stakingRatioWidth}%` }} /></div>
-            <div className="stake-scale"><span>0%</span><b>{stakingRatio == null ? "Total mined supply unavailable" : `${stakingRatio.toFixed(2)}% of total mined supply`}</b><span>100%</span></div>
+            <div className="stake-scale"><span>0%</span><b className="notranslate" translate="no">{stakingRatio == null ? "No verified ratio · initial value" : `${stakingRatio.toFixed(2)}% of total mined supply`}</b><span>100%</span></div>
             <div className="stake-mini-grid">
-              <div><small>{"REQUIREMENT"}</small><strong>{snapshot ? jude(snapshot.serviceNodes.stakingRequirement) : "N/A"}</strong><span>{"JUDE / node"}</span></div>
-              <div><small>{"TOTAL MINED SUPPLY"}</small><strong>{minedSupply ? atomicJude(minedSupply) : "N/A"}</strong><span>{minedSupply ? "JUDE" : "Supply feed unavailable"}</span></div>
-              <div><small>{"CURRENT SERVICE NODES"}</small><strong>{snapshot ? compact(snapshot.serviceNodes.total) : "N/A"}</strong><span>{"Registered on mainnet"}</span></div>
-              <div><small>{"STAKING RATIO"}</small><strong>{stakingRatio == null ? "N/A" : `${stakingRatio.toFixed(2)}%`}</strong><span>{"Current stake / total mined"}</span></div>
+              <div><small>{"REQUIREMENT"}</small><strong className="notranslate" translate="no">{jude(serviceNodes?.stakingRequirement ?? 0)}</strong><span>{"JUDE / node"}</span></div>
+              <div><small>{"TOTAL MINED SUPPLY"}</small><strong className="notranslate" translate="no">{minedSupply ? atomicJude(minedSupply) : "0"}</strong><span>{minedSupply == null ? "No verified supply · initial value" : "JUDE"}</span></div>
+              <div><small>{"CURRENT SERVICE NODES"}</small><strong className="notranslate" translate="no">{compact(serviceNodes?.total ?? 0)}</strong><span>{"Registered on mainnet"}</span></div>
+              <div><small>{"STAKING RATIO"}</small><strong className="notranslate" translate="no">{`${(stakingRatio ?? 0).toFixed(2)}%`}</strong><span>{stakingRatio == null ? "No verified ratio · initial value" : "Current stake / total mined"}</span></div>
             </div>
           </section>
 
           <section className="stats-panel chain-pulse-panel">
-            <header><div><h2>{"Recent Block Activity"}</h2></div><span>{snapshot ? `${snapshot.network.targetSeconds} s target` : "Target unavailable"}</span></header>
+            <header><div><h2>{"Recent Block Activity"}</h2></div><span>{liveNetwork ? `${liveNetwork.targetSeconds} s target` : "Target unavailable"}</span></header>
             <div className="pulse-timeline" aria-label={"Recent interactive block activity"}>
               <i className="pulse-track" />
               {(snapshot?.blocks || []).slice(0, 5).reverse().map((block, index) => <button key={block.height} className="pulse-node" style={{ "--pulse": `${Math.max(18, Math.min(82, 22 + block.txs * 13))}%`, "--left": `${4 + index * 23}%` } as React.CSSProperties} onClick={() => openBlock(block.height)} aria-label={`Open block ${block.height}`}>
                 <i />
                 <span className="pulse-tooltip"><b>{"BLOCK"} {compact(block.height)}</b><em>{`${block.txs} transactions`}</em><em>{bytes(block.size)}</em><em>{`${age(block.timestamp)} ago`}</em><small>{"CLICK TO INSPECT →"}</small></span>
               </button>)}
-              {!snapshot && Array.from({ length: 5 }, (_, index) => <span className="pulse-node loading" key={index} style={{ "--pulse": `${28 + (index % 4) * 14}%`, "--left": `${4 + index * 23}%` } as React.CSSProperties}><i /></span>)}
             </div>
-            <div className="pulse-footer"><span>{"OLDER"}</span><b>{snapshot?.blocks[0] ? `LATEST · ${compact(snapshot.blocks[0].height)}` : "SYNCHRONIZING"}</b></div>
+            <div className="pulse-footer"><span>{"OLDER"}</span><b className="notranslate" translate="no">{`LATEST · ${compact(snapshot?.blocks[0]?.height ?? 0)}`}</b></div>
           </section>
 
           <section className="stats-panel protocol-panel">
             <header><div><h2>{"Chain Parameters"}</h2></div></header>
             <dl>
-              <div><dt>{"Hard Fork Version"}</dt><dd>{snapshot ? `v${snapshot.network.hardFork}` : "N/A"}</dd></div>
-              <div><dt>{"Protocol Version"}</dt><dd>{snapshot?.network.protocol ?? "N/A"}</dd></div>
-              <div><dt>{"Median Block Size"}</dt><dd>{snapshot ? bytes(snapshot.network.blockSizeMedian) : "N/A"}</dd></div>
-              <div><dt>{"Block Size Limit"}</dt><dd>{snapshot ? bytes(snapshot.network.blockSizeLimit) : "N/A"}</dd></div>
+              <div><dt>{"Hard Fork Version"}</dt><dd className="notranslate" translate="no">{`v${liveNetwork?.hardFork ?? 0}`}</dd></div>
+              <div><dt>{"Protocol Version"}</dt><dd className="notranslate" translate="no">{liveNetwork?.protocol ?? "0"}</dd></div>
+              <div><dt>{"Median Block Size"}</dt><dd className="notranslate" translate="no">{liveNetwork ? bytes(liveNetwork.blockSizeMedian) : "0 B"}</dd></div>
+              <div><dt>{"Block Size Limit"}</dt><dd className="notranslate" translate="no">{liveNetwork ? bytes(liveNetwork.blockSizeLimit) : "0 B"}</dd></div>
             </dl>
           </section>
         </div>
@@ -981,31 +1689,29 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
         <section className="stats-panel lifecycle-panel">
           <header><div><h2>{"Service Node Lifecycle"}</h2></div></header>
           <div className="lifecycle-grid">
-            <article><TxTypeBadge type="unlock" compact iconOnly /><div><small>{"UNLOCKING"}</small><button className="lifecycle-count" onClick={() => setLifecycleView(lifecycleView === "unlocking" ? null : "unlocking")}>{snapshot ? compact(snapshot.serviceNodes.exiting) : "N/A"}</button><span>{"Nodes scheduled to exit service"}</span><button className="lifecycle-action" onClick={() => setLifecycleView("unlocking")}>View unlocking nodes →</button></div></article>
-            <article><TxTypeBadge type="decommission" compact iconOnly /><div><small>{"DECOMMISSIONED"}</small><button className="lifecycle-count" disabled={!decommissionedServiceNodes} onClick={() => setLifecycleView(lifecycleView === "decommissioned" ? null : "decommissioned")}>{snapshot ? compact(snapshot.serviceNodes.decommissioned) : "N/A"}</button><span>{"Funded nodes temporarily inactive"}</span>{decommissionedServiceNodes > 0 ? <button className="lifecycle-action" onClick={() => setLifecycleView("decommissioned")}>View decommissioned nodes →</button> : <em className="lifecycle-action empty">No decommissioned nodes</em>}</div></article>
-            <article><TxTypeBadge type="deregistration" compact iconOnly /><div><small>{"DEREGISTERED · STAKE LOCKED"}</small><button className="lifecycle-count" onClick={() => { setLifecycleView(lifecycleView === "deregistered" ? null : "deregistered"); setDeregisteredNodePage(0); }}>{lockedDeregisteredServiceNodeTotal !== null ? compact(lockedDeregisteredServiceNodeTotal) : "N/A"}</button><span>{deregisteredSnapshot?.live ? `Updated at block ${compact(deregisteredSnapshot.sourceHeight!)}` : deregisteredSnapshot?.status === "syncing" ? "Synchronizing deregistered nodes" : "Deregistration data unavailable"}</span><button className="lifecycle-action" onClick={() => { setLifecycleView("deregistered"); setDeregisteredNodePage(0); }}>View deregistered nodes →</button></div></article>
+            <article><TxTypeBadge type="unlock" compact iconOnly /><div><small>{"UNLOCKING"}</small><button className="lifecycle-count notranslate" translate="no" onClick={() => setLifecycleView(lifecycleView === "unlocking" ? null : "unlocking")}>{compact(serviceNodes?.exiting ?? 0)}</button><span>{"Nodes scheduled to exit service"}</span><button className="lifecycle-action" onClick={() => setLifecycleView("unlocking")}>View unlocking nodes →</button></div></article>
+            <article><TxTypeBadge type="decommission" compact iconOnly /><div><small>{"DECOMMISSIONED"}</small><button className="lifecycle-count notranslate" translate="no" disabled={!decommissionedServiceNodes} onClick={() => setLifecycleView(lifecycleView === "decommissioned" ? null : "decommissioned")}>{compact(serviceNodes?.decommissioned ?? 0)}</button><span>{"Funded nodes temporarily inactive"}</span>{decommissionedServiceNodes > 0 ? <button className="lifecycle-action" onClick={() => setLifecycleView("decommissioned")}>View decommissioned nodes →</button> : <em className="lifecycle-action empty">No decommissioned nodes</em>}</div></article>
+            <article><TxTypeBadge type="deregistration" compact iconOnly /><div><small>{"DEREGISTRATION RECORDS"}</small><button className="lifecycle-count notranslate" translate="no" onClick={() => { setLifecycleView(lifecycleView === "deregistered" ? null : "deregistered"); setDeregisteredNodePage(0); }}>{compact(deregisteredTotal ?? 0)}</button><span>{`Indexed through block ${compact(deregisteredIndexedThrough ?? 0)}`}</span><button className="lifecycle-action" onClick={() => { setLifecycleView("deregistered"); setDeregisteredNodePage(0); }}>View deregistration records →</button></div></article>
           </div>
           {lifecycleView && <div className="lifecycle-details">
-            <header><div><h3>{lifecycleView === "unlocking" ? "Nodes pending unlock" : lifecycleView === "decommissioned" ? "Temporarily decommissioned nodes" : "Deregistered nodes · Stake locked"}</h3></div><div className="lifecycle-header-actions">{lifecycleView === "deregistered" && deregisteredNodes.length > 20 && <PaginationControls page={deregisteredNodePage} lastPage={deregisteredNodeLastPage} pageSize={deregisteredNodePageSize} onPageChange={setDeregisteredNodePage} onPageSizeChange={(size) => { setDeregisteredNodePageSize(size); setDeregisteredNodePage(0); }} />}<button onClick={() => setLifecycleView(null)} aria-label={"Close lifecycle details"}>×</button></div></header>
+            <header><div><h3>{lifecycleView === "unlocking" ? "Nodes pending unlock" : lifecycleView === "decommissioned" ? "Temporarily decommissioned nodes" : "Deregistration records"}</h3></div><div className="lifecycle-header-actions">{lifecycleView === "deregistered" && deregisteredNodes.length > 20 && <PaginationControls page={deregisteredNodePage} lastPage={deregisteredNodeLastPage} pageSize={deregisteredNodePageSize} onPageChange={setDeregisteredNodePage} onPageSizeChange={(size) => { setDeregisteredNodePageSize(size); setDeregisteredNodePage(0); }} />}<button onClick={() => setLifecycleView(null)} aria-label={"Close lifecycle details"}>×</button></div></header>
             <div className={`table-card ${lifecycleView === "unlocking" ? "unlock-detail-table" : lifecycleView === "decommissioned" ? "decommission-detail-table" : "deregistered-table"}`}>
               {lifecycleView === "unlocking" ? <>
                 <div className="table-head"><span>{"NODE PUBLIC KEY"}</span><span>{"STAKE"}</span><span>{"REGISTERED BLOCK"}</span><span>{"LAST REWARD"}</span><span>{"SCHEDULED UNLOCK BLOCK"}</span><span>{"EST. TIME LEFT"}</span></div>
-                {(snapshot?.serviceNodes.unlockingNodes || []).map((node) => {
-                  const remainingBlocks = snapshot ? Math.max(0, node.unlockAt - snapshot.network.height) : 0;
-                  return <div className="table-row service-node-row-link" key={node.publicKey} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}><span className="node-key detail-link">{hashPreview(node.publicKey)}</span><span>{jude(node.contributed)} JUDE</span><span className="block-height detail-link">{compact(node.registeredAt)}</span><span className="block-height detail-link">{compact(node.lastRewardAt)}</span><span className="block-height">{compact(node.unlockAt)}</span><span className="unlock-eta"><b>{snapshot ? estimatedBlockWait(remainingBlocks, snapshot.network.targetSeconds) : "N/A"}</b><small>{snapshot ? `${compact(remainingBlocks)} blocks` : "Waiting for chain data"}</small></span></div>;
+                {(serviceNodes?.unlockingNodes || []).map((node) => {
+                  const remainingBlocks = Math.max(0, node.unlockAt - serviceNodeHeight);
+                  return <div className="table-row service-node-row-link" key={node.publicKey} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}><span className="node-key detail-link">{hashPreview(node.publicKey)}</span><span>{jude(node.contributed)} JUDE</span><span className="block-height detail-link">{compact(node.registeredAt)}</span><span className="block-height detail-link">{compact(node.lastRewardAt)}</span><span className="block-height">{compact(node.unlockAt)}</span><span className="unlock-eta"><b>{liveNetwork ? estimatedBlockWait(remainingBlocks, liveNetwork.targetSeconds) : "N/A"}</b><small>{`${compact(remainingBlocks)} blocks`}</small></span></div>;
                 })}
               </> : lifecycleView === "decommissioned" ? <>
                 <div className="table-head"><span>{"NODE PUBLIC KEY"}</span><span>{"CONTRIBUTORS"}</span><span>{"DECOMMISSIONS"}</span><span>{"DOWNTIME CREDIT"}</span></div>
-                {(snapshot?.serviceNodes.decommissionedNodes || []).map((node) => <div className="table-row service-node-row-link" key={node.publicKey} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}><span className="node-key detail-link">{hashPreview(node.publicKey)}</span><span>{node.contributors}/{node.maxContributors}</span><span>{compact(node.decommissionCount)}</span><span>{compact(node.downtimeCredit)} {"blocks"}</span></div>)}
-                {snapshot && snapshot.serviceNodes.decommissionedNodes.length === 0 && <div className="lifecycle-empty"><b>0</b><span>{"No service nodes are currently decommissioned."}</span><small>{"This panel will populate automatically when the chain reports a temporarily offline funded node."}</small></div>}
+                {(serviceNodes?.decommissionedNodes || []).map((node) => <div className="table-row service-node-row-link" key={node.publicKey} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}><span className="node-key detail-link">{hashPreview(node.publicKey)}</span><span>{node.contributors}/{node.maxContributors}</span><span>{compact(node.decommissionCount)}</span><span>{compact(node.downtimeCredit)} {"blocks"}</span></div>)}
+                {serviceNodes && serviceNodes.decommissionedNodes.length === 0 && <div className="lifecycle-empty"><b>0</b><span>{"No service nodes are currently decommissioned."}</span><small>{"This panel will populate automatically when the chain reports a temporarily offline funded node."}</small></div>}
               </> : <>
                 <div className="table-head"><span>{"NODE PUBLIC KEY"}</span><span>{"STAKE STATUS"}</span><span>{"REGISTERED BLOCK"}</span><span>{"STAKE UNLOCK HEIGHT"}</span></div>
-                {paginatedDeregisteredNodes.map((node) => <div className="table-row service-node-row-link" key={`${node.publicKey}-${node.unlockedAt}`} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}><span className="node-key detail-link">{hashPreview(node.publicKey)}</span><span>{"LOCKED"}</span><span className="block-height detail-link">{compact(node.registeredAt)}</span><span className="block-height detail-link">{compact(node.unlockedAt)}</span></div>)}
-                {deregisteredNodes.length === 0 && <div className="lifecycle-empty"><span>{deregisteredSnapshot?.live ? "No deregistered nodes have locked stake." : deregisteredSnapshot?.status === "syncing" ? "Synchronizing deregistered nodes…" : "Deregistration data unavailable."}</span></div>}
-
+                {paginatedDeregisteredNodes.map((node) => <div className="table-row service-node-row-link" key={`${node.publicKey}-${node.unlockedAt}`} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}><span className="node-key detail-link">{hashPreview(node.publicKey)}</span><span>{serviceNodeHeight > 0 ? serviceNodeHeight >= node.unlockedAt ? "RELEASED" : "LOCKED" : "N/A"}</span><span className="block-height detail-link">{compact(node.registeredAt)}</span><span className="block-height detail-link">{compact(node.unlockedAt)}</span></div>)}
               </>}
             </div>
-            {lifecycleView === "unlocking" && snapshot && <p className="unlock-estimate-note">Estimated time is calculated using the current chain height and the {snapshot.network.targetSeconds}-second target block time. Actual unlock timing may vary as blocks are produced.</p>}
+            {lifecycleView === "unlocking" && liveNetwork && <p className="unlock-estimate-note">Estimated time is calculated using the current chain height and the {liveNetwork.targetSeconds}-second target block time. Actual unlock timing may vary as blocks are produced.</p>}
           </div>}
         </section>
       </section>}
@@ -1025,35 +1731,36 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
             spellCheck={false}
           />
           {serviceNodeQuery && <button type="button" onClick={() => { setServiceNodeQuery(""); setServiceNodePage(0); }} aria-label="Clear Service Node search">Clear</button>}
-          <span className="service-node-search-count">{snapshot ? (serviceNodeQuery.trim() ? `RESULTS: ${compact(filteredServiceNodes.length)}` : `TOTAL NODES: ${compact(snapshot.serviceNodes.total)}`) : "Loading nodes…"}</span>
+          <span className="service-node-search-count notranslate" translate="no">{serviceNodeQuery.trim() ? `RESULTS: ${compact(filteredServiceNodes.length)}` : `TOTAL NODES: ${compact(serviceNodes?.total ?? 0)}`}</span>
         </form>
         <div className="staking-stats">
-          <article><small>{"TOTAL SERVICE NODES"}</small><strong>{snapshot ? compact(snapshot.serviceNodes.total) : connection === "offline" ? "N/A" : "Loading…"}</strong><span>{"Registered on mainnet"}</span></article>
-          <article><small>{"ACTIVE NODES"}</small><strong>{snapshot ? compact(snapshot.serviceNodes.active) : connection === "offline" ? "N/A" : "Loading…"}</strong><span className="trend">{snapshot ? "Currently active on mainnet" : "Loading network status"}</span></article>
-          <article><small>{"STAKING REQUIREMENT"}</small><strong>{snapshot ? <>{jude(snapshot.serviceNodes.stakingRequirement)} <i>JUDE</i></> : connection === "offline" ? "N/A" : "Loading…"}</strong><span>{"Required for a fully funded node"}</span></article>
-          <article><small>{"TOTAL STAKED"}</small><strong>{snapshot ? <>{jude(snapshot.serviceNodes.totalContributed)} <i>JUDE</i></> : connection === "offline" ? "N/A" : "Loading…"}</strong><span className="trend">{"Total contributed to Service Nodes"}</span></article>
-          <article className="unlocking-stat"><small>{"UNLOCKING NODES"}</small><strong>{snapshot ? compact(snapshot.serviceNodes.exiting) : connection === "offline" ? "N/A" : "Loading…"}</strong><span>{"Scheduled to exit service"}</span></article>
-          <article><small>{"DECOMMISSIONED NODES"}</small><strong>{snapshot ? compact(snapshot.serviceNodes.decommissioned) : connection === "offline" ? "N/A" : "Loading…"}</strong><span>{"Temporarily inactive"}</span></article>
+          <article><small>{"TOTAL SERVICE NODES"}</small><strong className="notranslate" translate="no">{compact(serviceNodes?.total ?? 0)}</strong><span>{"Registered on mainnet"}</span></article>
+          <article><small>{"ACTIVE NODES"}</small><strong className="notranslate" translate="no">{compact(serviceNodes?.active ?? 0)}</strong><span className="trend">{"Currently active on mainnet"}</span></article>
+          <article><small>{"STAKING REQUIREMENT"}</small><strong className="notranslate" translate="no">{jude(serviceNodes?.stakingRequirement ?? 0)} <i>JUDE</i></strong><span>{"Required for a fully funded node"}</span></article>
+          <article><small>{"TOTAL STAKED"}</small><strong className="notranslate" translate="no">{jude(serviceNodes?.totalContributed ?? 0)} <i>JUDE</i></strong><span className="trend">{"Total contributed to Service Nodes"}</span></article>
+          <article className="unlocking-stat"><small>{"UNLOCKING NODES"}</small><strong className="notranslate" translate="no">{compact(serviceNodes?.exiting ?? 0)}</strong><span>{"Scheduled to exit service"}</span></article>
+          <article><small>{"DECOMMISSIONED NODES"}</small><strong className="notranslate" translate="no">{compact(serviceNodes?.decommissioned ?? 0)}</strong><span>{"Temporarily inactive"}</span></article>
         </div>
-        {Boolean(snapshot?.serviceNodes.decommissionedNodes?.length) && (
+        {awaitingServiceNodeRows.length > 0 && <AwaitingContributionsPanel nodes={awaitingServiceNodeRows} onOpen={openServiceNode} />}
+        {Boolean(serviceNodes?.decommissionedNodes.length) && (
           <section className="decommissioned-live" aria-label="Temporarily decommissioned service nodes">
             <div className="decommissioned-live-heading">
               <div>
                 <h3>{"Temporarily Decommissioned"}</h3>
                 <p>{"Currently out of service and not earning rewards. This panel disappears automatically when every node returns to service."}</p>
               </div>
-              <strong>{snapshot!.serviceNodes.decommissionedNodes.length} {"DECOMMISSIONED"}</strong>
+              <strong className="notranslate" translate="no">{serviceNodes!.decommissionedNodes.length} {"DECOMMISSIONED"}</strong>
             </div>
             <div className="decommissioned-live-table">
               <div className="table-head"><span>{"STATUS"}</span><span>{"NODE PUBLIC KEY"}</span><span>{"CONTRIBUTORS"}</span><span>{"OPERATOR FEE (%)"}</span><span>{"DECOMMISSIONS"}</span><span>{"LAST UPTIME AGE [h:m:s]"}</span><span>{"DOWNTIME CREDIT"}</span></div>
-              {snapshot!.serviceNodes.decommissionedNodes.map((node) => (
-                <div className="table-row service-node-row-link" key={node.publicKey} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}>
+              {serviceNodes!.decommissionedNodes.map((node) => (
+                <div className="table-row service-node-row-link notranslate" translate="no" key={node.publicKey} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}>
                   <TxTypeBadge type="decommission" compact iconOnly />
                   <span className="node-key detail-link">{hashPreview(node.publicKey)}</span>
                   <span>{node.contributors}/{node.maxContributors}</span>
-                  <span>{node.operatorFee == null ? "N/A" : node.operatorFee}</span>
+                  <span>{node.operatorFee == null ? "NOT REPORTED" : node.operatorFee}</span>
                   <span>{compact(node.decommissionCount)}</span>
-                  <span>{node.lastUptimeProof ? age(node.lastUptimeProof) : "N/A"}</span>
+                  <span>{node.lastUptimeProof ? age(node.lastUptimeProof) : "0"}</span>
                   <span>{compact(node.downtimeCredit)} {"blocks"}</span>
                 </div>
               ))}
@@ -1063,21 +1770,21 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
         <div className="table-card nodes-table">
           <div className="table-head"><span>{"STATUS"}</span><span>{"NODE PUBLIC KEY"}</span><span>{"CONTRIBUTORS"}</span><span>{"OPERATOR FEE (%)"}</span><span>{"STAKE (JUDE)"}</span><span>{"REGISTRATION HEIGHT"}</span><span title="Sorted by latest reward block height">{"LAST REWARD BLOCK ↓"}</span><span>{"VERSION"}</span></div>
           {paginatedServiceNodes.map((node) => (
-            <div className="table-row service-node-row-link" key={node.publicKey} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}>
+            <div className="table-row service-node-row-link notranslate" translate="no" key={node.publicKey} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}>
               {node.unlocking
                 ? <span className="node-unlocking"><TxTypeBadge type="unlock" compact iconOnly /></span>
                 : <span className={node.active ? "node-active" : "node-inactive"}>{node.active ? "● ACTIVE" : node.funded ? "○ DECOMMISSIONED" : "○ AWAITING CONTRIBUTIONS"}</span>}
               <span className="node-key detail-link">{hashPreview(node.publicKey)}</span>
               <span>{node.contributors}/{node.maxContributors}</span>
-              <span>{node.operatorFee == null ? "N/A" : node.operatorFee}</span>
+              <span>{node.operatorFee == null ? "NOT REPORTED" : node.operatorFee}</span>
               <span>{jude(node.contributed)}</span>
               <span className="block-height detail-link">{compact(node.registeredAt)}</span>
               <span className="block-height detail-link">{compact(node.lastRewardAt)}</span>
               <span>{node.version}</span>
             </div>
           ))}
-          {snapshot && filteredServiceNodes.length === 0 && <div className="nodes-loading">No Service Node public key matches this search.</div>}
-          {!snapshot && <div className="nodes-loading">{connection === "offline" ? "Service Node data is temporarily unavailable." : "Loading live Service Node data…"}</div>}
+          {!serviceNodes && <div className="nodes-loading notranslate" translate="no">{"0 SERVICE NODES"}</div>}
+          {serviceNodes && filteredServiceNodes.length === 0 && <div className="nodes-loading">No Service Node public key matches this search.</div>}
         </div>
         <div className="service-node-bottom-pager">
           <PaginationControls
@@ -1099,22 +1806,22 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
           <div className="quorum-radar" aria-hidden="true">
             <i className="quorum-sweep" />
             <i className="quorum-ring ring-a" /><i className="quorum-ring ring-b" /><i className="quorum-ring ring-c" />
-            {(snapshot?.quorums.records[0]?.validators || []).slice(0, 10).map((key, index) => <i className="radar-node" key={key} style={{ "--n": index } as React.CSSProperties} />)}
-            <div className="radar-core"><strong>{snapshot?.quorums.records[0]?.validators.length ?? 0}</strong><span>{"VALIDATORS"}</span></div>
+            {(latestQuorum?.validators || []).slice(0, 10).map((key, index) => <i className="radar-node" key={key} style={{ "--n": index } as React.CSSProperties} />)}
+            <div className="radar-core"><strong className="notranslate" translate="no">{latestQuorum?.validators.length ?? 0}</strong><span>{"VALIDATORS"}</span></div>
           </div>
           <div className="quorum-overview">
             <h3>{"Public testing quorums, clearly mapped."}</h3>
             <p>{"Each sampled height shows its Service Node testing quorum: validators and the nodes assigned for testing. Checkpoint, Blink, and Pulse quorums are not represented in this panel."}</p>
             <div className="quorum-metrics">
-              <article><small>{"LATEST SAMPLE"}</small><strong className="block-height">{snapshot?.quorums.records[0] ? compact(snapshot.quorums.records[0].height) : "N/A"}</strong></article>
-              <article><small>{"VALIDATORS"}</small><strong>{snapshot?.quorums.records[0]?.validators.length ?? "N/A"}</strong></article>
-              <article><small>{"NODES UNDER TEST"}</small><strong>{snapshot?.quorums.records[0]?.workers.length ?? "N/A"}</strong></article>
+              <article><small>{"LATEST SAMPLE"}</small><strong className="block-height notranslate" translate="no">{latestQuorum ? compact(latestQuorum.height) : "0"}</strong></article>
+              <article><small>{"VALIDATORS"}</small><strong className="notranslate" translate="no">{latestQuorum?.validators.length ?? 0}</strong></article>
+              <article><small>{"NODES UNDER TEST"}</small><strong className="notranslate" translate="no">{latestQuorum?.workers.length ?? 0}</strong></article>
             </div>
           </div>
         </div>
         <div className="quorum-ledger">
           <div className="quorum-ledger-head"><span>{quorumPage === 0 ? "RECENT TESTING QUORUMS" : "HISTORICAL TESTING QUORUMS"}</span></div>
-          {(snapshot?.quorums.records || []).map((record, index) => (
+          {(quorums?.records || []).map((record, index) => (
             <details className="quorum-record" key={record.height}>
               <summary>
                 <span className="quorum-index">{String(quorumPage * quorumPageSize + index + 1).padStart(2, "0")}</span>
@@ -1127,13 +1834,12 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
               </div>
             </details>
           ))}
-          {!snapshot && <div className="nodes-loading">{"Loading live quorum data…"}</div>}
-          {snapshot && snapshot.quorums.records.length === 0 && <div className="nodes-loading">{"Quorum records are unavailable for the selected range."}</div>}
-          {quorumError && <div className="nodes-loading quorum-error">{`Unable to change page: ${quorumError}`}</div>}
+          {!quorums?.records.length && <div className="nodes-loading notranslate" translate="no">{"0 QUORUM RECORDS"}</div>}
         </div>
         <div className="quorum-bottom-pager">
-          <PaginationControls page={quorumPage} lastPage={snapshot ? Math.floor(snapshot.network.height / quorumPageSize) : 0} pageSize={quorumPageSize} loading={quorumLoading} onPageChange={(page) => void changeQuorumPage(page)} onPageSizeChange={changeQuorumPageSize} onPrefetchPage={(page) => prefetchSnapshot({ quorumPage: page })} disableNext={Boolean(snapshot && !snapshot.quorums.hasOlder)} />
+          <PaginationControls page={quorumPage} lastPage={liveNetwork ? Math.min(10000, Math.floor(liveNetwork.height / quorumPageSize)) : 0} pageSize={quorumPageSize} loading={quorumLoading} onPageChange={(page) => void changeQuorumPage(page)} onPageSizeChange={changeQuorumPageSize} onPrefetchPage={(page) => prefetchSnapshot({ quorumPage: page })} disableNext={Boolean(quorums && !quorums.hasOlder)} />
         </div>
+        {quorums?.truncated && <div className="nodes-loading">{"Older quorum history exists. Select a larger page size to reach earlier heights."}</div>}
       </section>
 
       <section className="staking home-service-nodes shell" id="home-service-nodes">
@@ -1141,25 +1847,26 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
           <div><h2>{"Latest Service Nodes"}</h2></div>
           <a className="section-link" href="/service-nodes">{"VIEW ALL SERVICE NODES →"}</a>
         </div>
-        {Boolean(snapshot?.serviceNodes.decommissionedNodes?.length) && (
+        {awaitingServiceNodeRows.length > 0 && <AwaitingContributionsPanel nodes={awaitingServiceNodeRows} onOpen={openServiceNode} home />}
+        {Boolean(serviceNodes?.decommissionedNodes.length) && (
           <section className="decommissioned-live home-decommissioned" aria-label="Temporarily decommissioned service nodes">
             <div className="decommissioned-live-heading">
               <div>
                 <h3>{"Temporarily Decommissioned"}</h3>
                 <p>{"Currently offline, out of service, and not earning rewards. This panel is hidden automatically when all nodes return to service."}</p>
               </div>
-              <strong>{snapshot!.serviceNodes.decommissionedNodes.length} {"DECOMMISSIONED"}</strong>
+              <strong className="notranslate" translate="no">{serviceNodes!.decommissionedNodes.length} {"DECOMMISSIONED"}</strong>
             </div>
             <div className="decommissioned-live-table">
               <div className="table-head"><span>{"STATUS"}</span><span>{"NODE PUBLIC KEY"}</span><span>{"CONTRIBUTORS"}</span><span>{"OPERATOR FEE (%)"}</span><span>{"DECOMMISSIONS"}</span><span>{"LAST UPTIME AGE [h:m:s]"}</span><span>{"DOWNTIME CREDIT"}</span></div>
-              {snapshot!.serviceNodes.decommissionedNodes.map((node) => (
-                <div className="table-row service-node-row-link" key={node.publicKey} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}>
+              {serviceNodes!.decommissionedNodes.map((node) => (
+                <div className="table-row service-node-row-link notranslate" translate="no" key={node.publicKey} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}>
                   <TxTypeBadge type="decommission" compact iconOnly />
                   <span className="node-key detail-link">{hashPreview(node.publicKey)}</span>
                   <span>{node.contributors}/{node.maxContributors}</span>
-                  <span>{node.operatorFee == null ? "N/A" : node.operatorFee}</span>
+                  <span>{node.operatorFee == null ? "NOT REPORTED" : node.operatorFee}</span>
                   <span>{compact(node.decommissionCount)}</span>
-                  <span>{node.lastUptimeProof ? age(node.lastUptimeProof) : "N/A"}</span>
+                  <span>{node.lastUptimeProof ? age(node.lastUptimeProof) : "0"}</span>
                   <span>{compact(node.downtimeCredit)} {"blocks"}</span>
                 </div>
               ))}
@@ -1169,20 +1876,20 @@ export default function Home({ serviceNodesOnly = false, statisticsOnly = false 
         <div className="table-card nodes-table">
           <div className="table-head"><span>{"STATUS"}</span><span>{"NODE PUBLIC KEY"}</span><span>{"CONTRIBUTORS"}</span><span>{"OPERATOR FEE (%)"}</span><span>{"STAKE (JUDE)"}</span><span>{"REGISTRATION HEIGHT"}</span><span title="Sorted by latest reward block height">{"LAST REWARD BLOCK ↓"}</span><span>{"VERSION"}</span></div>
           {homepageServiceNodes.map((node) => (
-            <div className="table-row service-node-row-link" key={node.publicKey} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}>
+            <div className="table-row service-node-row-link notranslate" translate="no" key={node.publicKey} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}>
               {node.unlocking
                 ? <span className="node-unlocking"><TxTypeBadge type="unlock" compact iconOnly /></span>
                 : <span className={node.active ? "node-active" : "node-inactive"}>{node.active ? "● ACTIVE" : node.funded ? "○ DECOMMISSIONED" : "○ PENDING"}</span>}
               <span className="node-key detail-link">{hashPreview(node.publicKey)}</span>
               <span>{node.contributors}/{node.maxContributors}</span>
-              <span>{node.operatorFee == null ? "N/A" : node.operatorFee}</span>
+              <span>{node.operatorFee == null ? "NOT REPORTED" : node.operatorFee}</span>
               <span>{jude(node.contributed)}</span>
               <span className="block-height detail-link">{compact(node.registeredAt)}</span>
               <span className="block-height detail-link">{compact(node.lastRewardAt)}</span>
               <span>{node.version}</span>
             </div>
           ))}
-          {!snapshot && <div className="nodes-loading">{connection === "offline" ? "Service Node data is temporarily unavailable." : "Loading live Service Node data…"}</div>}
+          {!serviceNodes && <div className="nodes-loading notranslate" translate="no">{"0 SERVICE NODES"}</div>}
         </div>
       </section>
 

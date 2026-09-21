@@ -72,7 +72,7 @@ export async function scanStakeRange(index: StakeIndex, reader: IndexReader, end
       hashes.push(hash);
     }
   }
-  
+
   if (hashes.length > TX_CHUNK * 4) {
     if (start === end) throw new Error("Transaction range exceeds scan budget");
     return scanStakeRange(index, reader, start + Math.floor((end - start) / 2));
@@ -156,7 +156,7 @@ export function createDeregistrationTracker(seed: StakeIndex, open: () => Promis
         if (headers[0].hash !== index.scannedHash) { index = copyIndex(seed); history.clear(); }
       }
       const blacklist = await reader.blacklist();
-      
+
       for (let chunk = 0; chunk < 4 && index.scannedThrough < reader.height; chunk += 1) {
         try {
           index = await scanStakeRange(index, reader, Math.min(reader.height, index.scannedThrough + HEADER_CHUNK));

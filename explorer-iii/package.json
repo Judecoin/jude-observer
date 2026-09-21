@@ -1,6 +1,6 @@
 {
   "name": "judecoin-blockchain-explorer-iii",
-  "version": "1.0.1",
+  "version": "1.0.12",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -10,11 +10,10 @@
     "build": "vinext build",
     "start": "vinext start",
     "audit:transaction-types": "node scripts/audit-transaction-types.mjs",
-    "sync:deregistered-nodes": "node --experimental-strip-types scripts/sync-deregistered-nodes.mjs",
-    "test": "pnpm run test:unit && pnpm run build && node --test tests/rendered-html.test.mjs",
+    "sync:deregistered-nodes": "node scripts/sync-deregistered-nodes.mjs",
+    "test": "pnpm run build && node --test tests/*.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "deploy": "pnpm run sync:deregistered-nodes && pnpm run build && wrangler deploy",
-    "test:unit": "node --experimental-strip-types --experimental-vm-modules --test tests/deregistration.test.mjs tests/worker-lifecycle.test.mjs"
+    "deploy": "pnpm run build && wrangler deploy"
   },
   "dependencies": {
     "react": "19.2.6",

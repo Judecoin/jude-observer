@@ -16,7 +16,7 @@ const newTx = "c".repeat(64);
 async function fixture() {
   const knownStake = seed.stakes[0];
   const state = {
-    tip: seed.scannedThrough + 1, time: Date.now(), offline: false, rejectFirst: false,
+    tip: seed.scannedThrough + 1, time: Date.now(), offline: false, rejectFirst: false, blockFailure: null,
     blacklist: [{ key_image: knownStake.keyImage, unlock_height: seed.scannedThrough + 100 }],
     calls: [],
   };
@@ -30,6 +30,13 @@ async function fixture() {
       state.calls.push({ host: url.hostname, path: url.pathname });
       if (url.pathname === "/get_info") return response({ status: "OK", height: state.tip + 1 });
       const body = JSON.parse(init.body);
+      if (body.method === "get_block") {
+        if (state.blockFailure && url.hostname === "node1.judecoin.com") return response(state.blockFailure);
+        return response({ result: { status: "OK", block_header: {
+          height: 100, hash: "a".repeat(64), timestamp: 1_700_000_000, num_txes: 0,
+          block_size: 128, difficulty: 1000, major_version: 14,
+        }, json: "{}" } });
+      }
       if (url.pathname === "/get_transactions") return response({ status: "OK", txs: [{
         tx_hash: newTx, block_height: seed.scannedThrough + 1, in_pool: false,
         extra: { sn_pubkey: newKey, sn_registration: {}, locked_key_images: [newImage] },
@@ -50,8 +57,8 @@ async function fixture() {
       throw new Error(`Unexpected RPC method ${body.method}`);
     },
   });
-  const module = new vm.SourceTextModule(stripTypeScriptTypes(workerSource), { context });
-  await module.link(async (specifier) => {
+  const workerModule = new vm.SourceTextModule(stripTypeScriptTypes(workerSource), { context });
+  await workerModule.link(async (specifier) => {
     if (specifier === "./deregistration") return new vm.SourceTextModule(stripTypeScriptTypes(trackerSource), { context });
     let values;
     if (specifier.includes("deregistered-service-nodes.json")) values = { default: history };
@@ -63,8 +70,8 @@ async function fixture() {
       for (const [key, value] of Object.entries(values)) this.setExport(key, value);
     }, { context });
   });
-  await module.evaluate();
-  const get = (path) => module.namespace.default.fetch(new Request(`https://explorer.test${path}`), {}, { waitUntil() {} });
+  await workerModule.evaluate();
+  const get = (path) => workerModule.namespace.default.fetch(new Request(`https://explorer.test${path}`), {}, { waitUntil() {} });
   return { state, get };
 }
 
@@ -122,3 +129,18 @@ test("JSON RPC errors trigger failover to another configured node", async () => 
   assert.equal((await response.json()).total, 1);
   assert.ok(f.state.calls.some((call) => call.host === "node.judecoin.info"));
 });
+
+for (const [name, failure] of [
+  ["JSON RPC error", { error: { message: "Unavailable" } }],
+  ["RPC status", { status: "BUSY" }],
+  ["nested RPC status", { result: { status: "BUSY" } }],
+]) {
+  test(`block lookup retries another node after an HTTP 200 ${name}`, async () => {
+    const f = await fixture();
+    f.state.blockFailure = failure;
+    const response = await f.get("/api/block?id=100");
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).height, 100);
+    assert.ok(f.state.calls.some((call) => call.host === "node.judecoin.info"));
+  });
+}
