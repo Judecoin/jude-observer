@@ -1,10 +1,10 @@
+import { readProductionSource } from "./helpers/production-source.mjs";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 
-const workerSource = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+const workerSource = await readProductionSource(new URL("../worker/index.ts", import.meta.url));
 const sourceFile = ts.createSourceFile("worker/index.ts", workerSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 assert.ok(sourceFile.statements.some((statement) => ts.isFunctionDeclaration(statement)
   && statement.name?.text === "createChainResponse"));
@@ -186,8 +186,8 @@ test("stale matching snapshots return before one shared background refresh finis
   const responses = await Promise.all([harness.request("tip=1000"), harness.request("tip=1000")]);
   await started.promise;
   const payloads = await Promise.all(responses.map((response) => response.json()));
-  
-  
+
+
   assert.deepEqual(payloads[0], verified);
   assert.deepEqual(payloads[1], verified);
   const callsWhilePending = harness.calls.length;

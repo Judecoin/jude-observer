@@ -8,7 +8,6 @@ const read = (path) => readFile(new URL(path, import.meta.url), "utf8");
 const seed = JSON.parse(await read("../data/service-node-stake-index.json"));
 const history = JSON.parse(await read("../data/deregistered-service-nodes.json"));
 const workerSource = await read("../worker/index.ts");
-const trackerSource = await read("../worker/deregistration.ts");
 const newKey = "e".repeat(64);
 const newImage = "d".repeat(64);
 const newTx = "c".repeat(64);
@@ -57,9 +56,20 @@ async function fixture() {
       throw new Error(`Unexpected RPC method ${body.method}`);
     },
   });
-  const workerModule = new vm.SourceTextModule(stripTypeScriptTypes(workerSource), { context });
-  await workerModule.link(async (specifier) => {
-    if (specifier === "./deregistration") return new vm.SourceTextModule(stripTypeScriptTypes(trackerSource), { context });
+  const workerUrl = new URL("../worker/index.ts", import.meta.url);
+  const modules = new Map();
+  const workerModule = new vm.SourceTextModule(stripTypeScriptTypes(workerSource), { context, identifier: workerUrl.href });
+  modules.set(workerUrl.href, workerModule);
+  await workerModule.link(async (specifier, parent) => {
+    if (specifier.startsWith(".") && !specifier.endsWith(".json")) {
+      const url = new URL(`${specifier}.ts`, parent.identifier);
+      if (!modules.has(url.href)) {
+        modules.set(url.href, readFile(url, "utf8").then((source) => (
+          new vm.SourceTextModule(stripTypeScriptTypes(source), { context, identifier: url.href })
+        )));
+      }
+      return modules.get(url.href);
+    }
     let values;
     if (specifier.includes("deregistered-service-nodes.json")) values = { default: history };
     else if (specifier.includes("service-node-stake-index.json")) values = { default: seed };

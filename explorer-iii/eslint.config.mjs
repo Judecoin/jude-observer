@@ -23,6 +23,7 @@ const eslintConfig = defineConfig([
   jsxA11y.flatConfigs.recommended,
   next.configs["core-web-vitals"],
   {
+    linterOptions: { reportUnusedDisableDirectives: "error" },
     languageOptions: {
       globals: {
         ...globals.browser,
@@ -36,16 +37,8 @@ const eslintConfig = defineConfig([
       },
     },
     rules: {
-      "react-hooks/set-state-in-effect": "off",
-      "react-hooks/exhaustive-deps": "off",
       "@next/next/no-img-element": "off",
       "@next/next/no-html-link-for-pages": "off",
-    },
-  },
-  {
-    files: ["worker/**/*.ts"],
-    rules: {
-      "@typescript-eslint/no-explicit-any": "off",
     },
   },
 ]);

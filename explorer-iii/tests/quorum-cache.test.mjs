@@ -63,8 +63,8 @@ test("isolates quorum cache tips and fails over semantic RPC errors", async () =
     assert.equal(older.height, 100);
     assert.equal(older.records.length, 5);
 
-    
-    
+
+
     const newerResponse = await worker.fetch(new Request("http://localhost/api/quorums?page=0&pageSize=5&tip=1000"), env, ctx);
     const newer = await newerResponse.json();
     assert.equal(newerResponse.status, 200);

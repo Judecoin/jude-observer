@@ -1,10 +1,10 @@
+import { readProductionSource } from "./helpers/production-source.mjs";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 
-const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+const source = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
 const ast = ts.createSourceFile("app/page.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const helperNames = new Set([
   "isNonNegativeInteger", "isValidServiceNodesSnapshot", "isProvisionalSnapshot",

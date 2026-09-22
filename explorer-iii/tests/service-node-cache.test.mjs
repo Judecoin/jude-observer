@@ -191,9 +191,9 @@ test("synchronously replaces a cached 438-node snapshot when the requested tip h
     assert.equal(first.data.height, 1_000);
     assert.equal(first.data.serviceNodes.active, 438);
 
-    
-    
-    
+
+
+
     advance(6_001);
     state.topHeight = 1_001;
     state.nodes = serviceNodes(439);

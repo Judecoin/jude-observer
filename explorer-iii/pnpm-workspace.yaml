@@ -2,3 +2,10 @@ allowBuilds:
   esbuild: true
   sharp: true
   workerd: true
+
+overrides:
+  "miniflare@4.20260730.0>sharp": 0.35.4
+  "miniflare@4.20260730.0>undici": 7.29.0
+  "vinext@1.0.0-beta.2>image-size": 2.0.3
+  "fast-uri@3.1.5": 3.1.6
+  "js-yaml@4.3.1": 4.3.2

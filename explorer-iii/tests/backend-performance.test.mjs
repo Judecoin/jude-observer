@@ -1,10 +1,10 @@
+import { readProductionSource } from "./helpers/production-source.mjs";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 
-const workerSource = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+const workerSource = await readProductionSource(new URL("../worker/index.ts", import.meta.url));
 const sourceFile = ts.createSourceFile("worker/index.ts", workerSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 
 function declaration(name) {
@@ -32,6 +32,10 @@ function productionFunctions(dependencies) {
     declaration("verifiedChainTransactionDetails"),
     declaration("chainSnapshot"),
     declaration("json"),
+    declaration("blockResponse"),
+    declaration("transactionResponse"),
+    declaration("serviceNodeResponse"),
+    declaration("deregisteredNodesResponse"),
     workerFetchSource(),
     "module.exports = { chainSnapshot, workerFetch };",
   ].join("\n\n");
@@ -41,6 +45,7 @@ function productionFunctions(dependencies) {
   const testModule = { exports: {} };
   vm.runInNewContext(compiled, {
     module: testModule, exports: testModule.exports, URL, Request, Response, Headers, Error,
+    rpcNodePreference: { current: null },
     Date: FixedDate, EXPLORER_PAGE_SIZE: 5, JUDECOIN_EMISSION_API: "https://example.test/emission",
     deregisteredHistory: { nodes: [], sourceHeight: 990, generatedAt: "2023-11-14T00:00:00.000Z" },
     ...dependencies,

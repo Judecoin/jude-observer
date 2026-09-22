@@ -10,17 +10,20 @@
     "build": "vinext build",
     "start": "vinext start",
     "audit:transaction-types": "node scripts/audit-transaction-types.mjs",
-    "sync:deregistered-nodes": "node scripts/sync-deregistered-nodes.mjs",
-    "test": "pnpm run build && node --test tests/*.test.mjs",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "deploy": "pnpm run build && wrangler deploy"
+    "sync:deregistered-nodes": "node --experimental-strip-types scripts/sync-deregistered-nodes.mjs",
+    "test": "pnpm run build && node --experimental-strip-types --experimental-vm-modules --test tests/*.test.mjs",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --max-warnings 0",
+    "deploy": "pnpm run build && wrangler deploy",
+    "test:unit": "node --experimental-strip-types --experimental-vm-modules --test tests/deregistration.test.mjs tests/worker-lifecycle.test.mjs",
+    "typecheck": "tsc --noEmit",
+    "check": "pnpm run lint && pnpm run typecheck && pnpm test"
   },
   "dependencies": {
-    "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "1.37.1",
+    "@cloudflare/vite-plugin": "1.49.0",
     "@eslint/js": "9.39.4",
     "@next/eslint-plugin-next": "16.2.6",
     "@tailwindcss/postcss": "4.2.1",
@@ -34,14 +37,15 @@
     "eslint-plugin-react": "7.37.5",
     "eslint-plugin-react-hooks": "7.1.1",
     "globals": "16.4.0",
-    "react-server-dom-webpack": "19.2.6",
+    "react-server-dom-webpack": "19.2.8",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
     "typescript-eslint": "8.59.3",
     "vinext": "1.0.0-beta.2",
-    "vite": "8.0.13",
-    "wrangler": "4.92.0"
+    "vite": "8.0.16",
+    "wrangler": "4.116.0"
   },
   "type": "module",
-  "displayName": "Judecoin Blockchain Explorer III"
+  "displayName": "Judecoin Blockchain Explorer III",
+  "packageManager": "pnpm@11.19.0"
 }

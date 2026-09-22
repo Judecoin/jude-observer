@@ -1,10 +1,10 @@
+import { readProductionSource } from "./helpers/production-source.mjs";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 
-const pageSource = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+const pageSource = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
 const exportedHelpers = [
   "sameChainSelection",
   "isValidChainSnapshot",
@@ -339,8 +339,8 @@ test("a provisional high cached height cannot poison the first normal live RPC s
   assert.equal(restored.height, 99_999_999);
   assert.equal(isProvisionalSnapshot(restored), true);
 
-  
-  
+
+
   assert.equal(rememberServiceNodesSnapshot(restored), restored);
   const live = serviceNodesSnapshot({
     height: 867_250,

@@ -1,6 +1,8 @@
+import { readProductionSource } from "./helpers/production-source.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import ts from "typescript";
 
 async function render(path = "/") {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -69,21 +71,21 @@ test("server-renders all three routes with numeric zero states and no visible lo
 test("adds live Awaiting Contributions without a permanent loading panel", async () => {
   const [response, page, worker, css] = await Promise.all([
     render(),
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
+    readProductionSource(new URL("../app/page.tsx", import.meta.url)),
+    readProductionSource(new URL("../worker/index.ts", import.meta.url)),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
   const html = await response.text();
 
-  
-  
+
+
   assert.doesNotMatch(html, /Awaiting Contributions/);
   assert.match(page, /Array\.isArray\(serviceNodes\?\.awaitingNodes\)/);
   assert.equal((page.match(/awaitingServiceNodeRows\.length > 0/g) || []).length, 2);
   assert.doesNotMatch(page, /api\/awaiting-service-nodes|Loading live awaiting-contribution data/);
 
-  
-  
+
+
   assert.match(worker, /awaitingNodes: mapAwaitingServiceNodes\(currentServiceNodeStates\)/);
   assert.match(worker, /\.filter\(\(node\) => !node\.funded\)/);
   assert.doesNotMatch(worker, /api\/awaiting-service-nodes|AWAITING_CACHE/);
@@ -92,7 +94,7 @@ test("adds live Awaiting Contributions without a permanent loading panel", async
 });
 
 test("never server-renders fabricated fallback chain data", async () => {
-  const [response, page] = await Promise.all([render(), readFile(new URL("../app/page.tsx", import.meta.url), "utf8")]);
+  const [response, page] = await Promise.all([render(), readProductionSource(new URL("../app/page.tsx", import.meta.url))]);
   const html = await response.text();
   assert.doesNotMatch(page, /fallbackBlocks|fallbackTransactions/);
   assert.doesNotMatch(html, /840164|2\.84 kH\/s|4\.82 G/);
@@ -125,7 +127,7 @@ test("renders an accurate statistics command center", async () => {
 });
 
 test("uses live current-chain Service Nodes while preserving locked deregistration history", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
   assert.match(page, /statusTotal = currentServiceNodeTotal \+ lockedDeregisteredServiceNodeTotal/);
   assert.match(page, /activeServiceNodes = serviceNodes\?\.active \?\? 0/);
   assert.match(page, /serviceNodes\.total - serviceNodes\.funded/);
@@ -140,8 +142,8 @@ test("uses live current-chain Service Nodes while preserving locked deregistrati
 
 test("uses total mined supply for the staking ratio and never fabricates 100 percent", async () => {
   const [page, worker] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
+    readProductionSource(new URL("../app/page.tsx", import.meta.url)),
+    readProductionSource(new URL("../worker/index.ts", import.meta.url)),
   ]);
   assert.match(page, /serviceNodes\.totalContributed \/ minedSupply/);
   assert.match(page, /% of total mined supply/);
@@ -153,7 +155,7 @@ test("uses total mined supply for the staking ratio and never fabricates 100 per
 });
 
 test("keeps the complete primary navigation and groups Statistics after Service Nodes", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
   const nav = page.slice(page.indexOf('<div className="nav-links">'), page.indexOf("</div>", page.indexOf('<div className="nav-links">')));
   assert.match(nav, /Home/);
   assert.match(nav, /Blocks/);
@@ -182,7 +184,7 @@ test("keeps the complete primary navigation and groups Statistics after Service 
 
 test("keeps the phone layout contained and readable", async () => {
   const [page, css] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readProductionSource(new URL("../app/page.tsx", import.meta.url)),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
   const mobileAuthority = css.slice(css.indexOf("/* Mobile layout authority."));
@@ -218,8 +220,8 @@ test("makes the homepage telemetry animation clearly visible", async () => {
 test("paginates the Service Node list with 50 rows by default", async () => {
   const [response, page, worker] = await Promise.all([
     render("/service-nodes"),
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
+    readProductionSource(new URL("../app/page.tsx", import.meta.url)),
+    readProductionSource(new URL("../worker/index.ts", import.meta.url)),
   ]);
   const html = await response.text();
   assert.match(html, /Service Node Overview/);
@@ -272,8 +274,8 @@ test("server-renders all six Service Node summaries as protected numeric zeros",
 
 test("paginates deregistration records at 20 rows while fetching the complete history", async () => {
   const [page, worker] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
+    readProductionSource(new URL("../app/page.tsx", import.meta.url)),
+    readProductionSource(new URL("../worker/index.ts", import.meta.url)),
   ]);
   assert.match(page, /deregisteredNodePageSize, setDeregisteredNodePageSize\] = useState\(20\)/);
   assert.match(page, /paginatedDeregisteredNodes/);
@@ -284,7 +286,7 @@ test("paginates deregistration records at 20 rows while fetching the complete hi
 });
 
 test("searches blocks, transactions, and Service Node public keys", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
   assert.match(page, /fetch\(`\/api\/block\?id=/);
   assert.match(page, /fetch\(`\/api\/transaction\?hash=/);
   assert.match(page, /fetch\(`\/api\/service-node\?key=/);
@@ -296,8 +298,8 @@ test("searches blocks, transactions, and Service Node public keys", async () => 
 
 test("uses live chain data, a constrained emission feed, freshness checks, and precise historical status", async () => {
   const [page, worker] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
+    readProductionSource(new URL("../app/page.tsx", import.meta.url)),
+    readProductionSource(new URL("../worker/index.ts", import.meta.url)),
   ]);
   assert.match(worker, /https:\/\/www\.judeblock\.net\/api\/emission/);
   assert.doesNotMatch(worker, /fetch\([^)]*judeblock\.net[^)]*\.text\(|DOMParser|querySelector/);
@@ -315,15 +317,15 @@ test("uses live chain data, a constrained emission feed, freshness checks, and p
   assert.match(page, /Staking and Scheduled Unlock/);
   assert.match(page, /Actual wall-clock timing may vary/);
   assert.doesNotMatch(page, /onClick=\{\(\) => openBlock\(node\.unlockAt\)\}/);
-  
-  
+
+
   assert.match(page, /if \(inputs == null && outputs == null\) return "N\/A"/);
   assert.match(page, /return `\$\{inputs \?\? "N\/A"\}\/\$\{outputs \?\? "N\/A"\}`/);
   assert.match(page, /Not detected/);
 });
 
 test("serves the last verified chain snapshot immediately while refreshing it in the background", async () => {
-  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const worker = await readProductionSource(new URL("../worker/index.ts", import.meta.url));
   assert.match(worker, /const CHAIN_CACHE_FRESH_MS = 5_000/);
   assert.match(worker, /const CHAIN_CACHE_STALE_MS = 300_000/);
   assert.match(worker, /const CHAIN_CACHE_TTL_SECONDS = 600/);
@@ -341,8 +343,8 @@ test("serves the last verified chain snapshot immediately while refreshing it in
 
 test("hides unavailable fields across service-node detail states", async () => {
   const [page, worker] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
+    readProductionSource(new URL("../app/page.tsx", import.meta.url)),
+    readProductionSource(new URL("../worker/index.ts", import.meta.url)),
   ]);
   const start = page.indexOf("async function openServiceNode");
   const end = page.indexOf("async function search", start);
@@ -357,7 +359,7 @@ test("hides unavailable fields across service-node detail states", async () => {
 });
 
 test("preserves authoritative transaction classification and multi-node pool validation", async () => {
-  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const worker = await readProductionSource(new URL("../worker/index.ts", import.meta.url));
   assert.match(worker, /function classifyTransaction/);
   assert.match(worker, /sn_state_change\?\.type/);
   assert.match(worker, /Promise\.allSettled\([\s\S]*get_transaction_pool/);
@@ -381,7 +383,7 @@ test("ships a real responsive phone layout and no local font paths", async () =>
 test("keeps final telemetry labels readable and homepage node headers complete", async () => {
   const [css, page] = await Promise.all([
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readProductionSource(new URL("../app/page.tsx", import.meta.url)),
   ]);
   assert.match(css, /\.chain-pulse-panel>header>span\{[^}]*font-size:12px/);
   assert.match(css, /\.pulse-footer\{[^}]*font-size:12px/);
@@ -395,7 +397,7 @@ test("keeps final telemetry labels readable and homepage node headers complete",
 });
 
 test("retries slow live snapshot requests without clearing previously loaded data", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
   assert.match(page, /SNAPSHOT_RETRY_DELAYS_MS = \[0, 1_200, 3_000\]/);
   assert.match(page, /async function fetchSnapshotWithRetry/);
   assert.match(page, /return await fetchSnapshot\(params\)/);
@@ -423,8 +425,8 @@ test("keeps the primary navigation fixed without covering page content", async (
 
 test("loads fast network data and verified pool data independently", async () => {
   const [page, worker] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
+    readProductionSource(new URL("../app/page.tsx", import.meta.url)),
+    readProductionSource(new URL("../worker/index.ts", import.meta.url)),
   ]);
   const chainStart = worker.indexOf("async function chainSnapshot");
   const chainEnd = worker.indexOf("async function createChainResponse", chainStart);
@@ -452,8 +454,8 @@ test("loads fast network data and verified pool data independently", async () =>
 test("loads and preserves verified testing-quorum data independently", async () => {
   const [response, page, worker] = await Promise.all([
     render(),
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
+    readProductionSource(new URL("../app/page.tsx", import.meta.url)),
+    readProductionSource(new URL("../worker/index.ts", import.meta.url)),
   ]);
   const html = await response.text();
   const quorumSection = page.slice(page.indexOf('<section className="quorum-section'), page.indexOf('<section className="staking home-service-nodes'));
@@ -462,7 +464,12 @@ test("loads and preserves verified testing-quorum data independently", async () 
   assert.match(page, /else if \(quorumPage === 0\) params\.set\("latest", "1"\)/);
   assert.match(page, /Math\.min\(10000, Math\.floor\(liveNetwork\.height \/ quorumPageSize\)\)/);
   assert.match(page, /setQuorumLiveSnapshot/);
-  assert.match(page, /Never replace the last verified quorum with an empty or failed read/);
+  const refreshStart = page.indexOf("const refreshQuorums = async");
+  const refreshEnd = page.indexOf("const requestRefresh =", refreshStart);
+  const refresh = page.slice(refreshStart, refreshEnd);
+  const failedRefresh = refresh.slice(refresh.indexOf("} catch {"), refresh.indexOf("} finally {"));
+  assert.match(failedRefresh, /nextDelay = QUORUM_REFRESH_DELAY_MS/);
+  assert.doesNotMatch(failedRefresh, /setQuorumLiveSnapshot|lastVerifiedQuorumSnapshot\s*=/);
   assert.match(page, /quorumRefreshRef\.current\?\.\(\)/);
   assert.match(page, /const QUORUM_REFRESH_DELAY_MS = 5_000/);
   assert.match(quorumSection, /className="notranslate" translate="no">\{latestQuorum\?\.validators\.length \?\? 0\}/);
@@ -494,7 +501,7 @@ test("loads and preserves verified testing-quorum data independently", async () 
 });
 
 test("refreshes every live feed without overlapping requests or clearing good data", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
   assert.match(page, /const NETWORK_REFRESH_DELAY_MS = 2_000/);
   assert.match(page, /const TRANSACTION_POOL_REFRESH_DELAY_MS = 5_000/);
   assert.match(page, /const SERVICE_NODE_REFRESH_DELAY_MS = 15_000/);
@@ -524,8 +531,8 @@ test("refreshes every live feed without overlapping requests or clearing good da
 
 test("serves one strict real-time Service Node definition with private browser caching", async () => {
   const [page, worker] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
+    readProductionSource(new URL("../app/page.tsx", import.meta.url)),
+    readProductionSource(new URL("../worker/index.ts", import.meta.url)),
   ]);
   const builderStart = worker.indexOf("function buildServiceNodesSnapshot");
   const builderEnd = worker.indexOf("async function serviceNodesLiveSnapshot", builderStart);
@@ -540,7 +547,10 @@ test("serves one strict real-time Service Node definition with private browser c
   assert.match(worker, /topHeight < Number\(requestedTip\)/);
   assert.match(worker, /path: "\/api\/service-nodes-live"/);
   assert.match(worker, /Promise\.any\(JUDECOIN_RPC_NODES\.map/);
-  assert.match(worker, /Promise\.all\(\[[\s\S]*rpcFetchNode\(node, "\/get_info", undefined, 35_000\)[\s\S]*rpcFetchNode\(node, "\/json_rpc", init\)/);
+  const compiledWorker = ts.transpileModule(worker, {
+    compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext },
+  }).outputText;
+  assert.match(compiledWorker, /Promise\.all\(\[[\s\S]*rpcFetchNode\(node, "\/get_info", undefined, 35_000\)[\s\S]*rpcFetchNode\(node, "\/json_rpc", init\)/);
   assert.match(worker, /info\?\.mainnet !== true \|\| info\?\.nettype !== "mainnet"/);
   assert.match(worker, /minimumHeight: Number\.isInteger\(requestedTip\)/);
   assert.match(worker, /createServiceNodesLiveResponse\(new URL\(url\.toString\(\)\)\)/);
@@ -561,7 +571,7 @@ test("serves one strict real-time Service Node definition with private browser c
 });
 
 test("selects the trusted newest complete Service Node snapshot and keeps its matching height", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
   const start = page.indexOf("const chainServiceNodesSnapshot:");
   const end = page.indexOf("const selectedLiveQuorums", start);
   assert.ok(start >= 0 && end > start);
@@ -581,7 +591,7 @@ test("selects the trusted newest complete Service Node snapshot and keeps its ma
 });
 
 test("restores only validated snapshots and never clears verified data after refresh failures", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
   const serviceValidatorStart = page.indexOf("function isValidServiceNodesSnapshot");
   const serviceValidatorEnd = page.indexOf("function isValidNetworkPreview", serviceValidatorStart);
   const serviceValidator = page.slice(serviceValidatorStart, serviceValidatorEnd);
@@ -641,7 +651,7 @@ test("restores only validated snapshots and never clears verified data after ref
 });
 
 test("binds block and transaction rows to the requested pagination selection", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
   const rowsStart = page.indexOf("const blocksSelectionMatches");
   const rowsEnd = page.indexOf("const particles", rowsStart);
   assert.ok(rowsStart >= 0 && rowsEnd > rowsStart);
@@ -656,7 +666,7 @@ test("binds block and transaction rows to the requested pagination selection", a
 });
 
 test("the Service Nodes-only route skips chain and transaction-pool requests", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
   const poolEffect = sourceEffectContaining(page, "const refreshTransactionPool = async () => {");
   const chainEffect = sourceEffectContaining(page, "const loadSnapshot = async () => {");
   const chainCatchUpEffect = sourceEffectContaining(page, "const refreshSnapshotAtTip = async () => {");
@@ -685,7 +695,7 @@ test("restores every metric separator and strengthens the hero radar", async () 
 
 test("keeps the fixed navigation visible above every detail page", async () => {
   const [page, css] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readProductionSource(new URL("../app/page.tsx", import.meta.url)),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
   assert.match(css, /\.nav\{[\s\S]*position:fixed;/);
@@ -716,7 +726,7 @@ test("sizes the Statistics reactor cube around its active-node label", async () 
 
 test("omits the internal global output index from visitor-facing detail tables", async () => {
   const [page, css] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readProductionSource(new URL("../app/page.tsx", import.meta.url)),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
   const outputTable = page.slice(page.indexOf('detail.outputs && <section className="detail-outputs"'), page.indexOf("</section>}", page.indexOf('detail.outputs && <section className="detail-outputs"')));
@@ -728,7 +738,7 @@ test("omits the internal global output index from visitor-facing detail tables",
 });
 
 test("uses clear, consistent titles across every detail page state", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
   assert.doesNotMatch(page, /title: `Block \$\{compact\(data\.height\)\}`/);
   assert.match(page, /title: "Block Details", kind: "block"/);
   assert.match(page, /title: "Transaction Details", kind: "transaction"/);
@@ -741,7 +751,7 @@ test("uses clear, consistent titles across every detail page state", async () =>
 });
 
 test("opens every Transactions table row as Transaction Details", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
   const start = page.indexOf('<section className="stream shell" id="transactions">');
   const end = page.indexOf("</section>", start);
   const transactionSection = page.slice(start, end);
@@ -753,7 +763,7 @@ test("opens every Transactions table row as Transaction Details", async () => {
 });
 
 test("opens every Blocks table row as Block Details", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
   const blocksSection = page.slice(page.indexOf('id="blocks"'), page.indexOf('id="transactions"'));
   assert.match(blocksSection, /className="table-row block-row-link"/);
   assert.match(blocksSection, /role="button" tabIndex=\{0\} aria-label=\{`Open block/);
@@ -763,7 +773,7 @@ test("opens every Blocks table row as Block Details", async () => {
 });
 
 test("opens every Service Node ledger row as Service Node Details", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
   const serviceNodePage = page.slice(page.indexOf("{serviceNodesOnly &&"), page.indexOf("<section className=\"quorum-section", page.indexOf("{serviceNodesOnly &&")));
   const homepageNodes = page.slice(page.indexOf("home-service-nodes"), page.indexOf("<section className=\"privacy-panel", page.indexOf("home-service-nodes")));
   assert.match(serviceNodePage, /className="table-row service-node-row-link notranslate" translate="no"/);
@@ -775,7 +785,7 @@ test("opens every Service Node ledger row as Service Node Details", async () => 
 });
 
 test("keeps block-reward records out of Transaction Details", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
   const start = page.indexOf("async function openTransaction");
   const end = page.indexOf("async function openServiceNode", start);
   const transactionDetail = page.slice(start, end);
@@ -787,7 +797,7 @@ test("keeps block-reward records out of Transaction Details", async () => {
 });
 
 test("uses the complete quorum summary row to expand its matrix", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
   const start = page.indexOf('<div className="quorum-ledger">');
   const end = page.indexOf("</section>", start);
   const quorumLedger = page.slice(start, end);

@@ -1,27 +1,37 @@
+import { readProductionSource } from "./helpers/production-source.mjs";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 
-const pageSource = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+const pageSource = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
 const sourceFile = ts.createSourceFile("app/page.tsx", pageSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const home = sourceFile.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "Home");
 assert.ok(home?.body);
 
+function findNode(predicate) {
+  let found;
+  function visit(node) {
+    if (found) return;
+    if (predicate(node)) { found = node; return; }
+    node.forEachChild(visit);
+  }
+  visit(sourceFile);
+  return found;
+}
+
 function functionSource(name) {
-  const declaration = [...sourceFile.statements, ...home.body.statements]
-    .find((node) => ts.isFunctionDeclaration(node) && node.name?.text === name);
+  const declaration = findNode((node) => ts.isFunctionDeclaration(node) && node.name?.text === name);
   assert.ok(declaration, `Missing ${name}`);
   return declaration.getText(sourceFile);
 }
 
 function effectSource(marker) {
-  const effect = home.body.statements.find((node) => ts.isExpressionStatement(node)
-    && ts.isCallExpression(node.expression) && node.expression.expression.getText(sourceFile) === "useEffect"
-    && node.expression.arguments[0].getText(sourceFile).includes(marker));
+  const effect = findNode((node) => ts.isCallExpression(node)
+    && node.expression.getText(sourceFile) === "useEffect"
+    && node.arguments[0].getText(sourceFile).includes(marker));
   assert.ok(effect, `Missing effect ${marker}`);
-  return effect.expression.arguments[0].getText(sourceFile);
+  return effect.arguments[0].getText(sourceFile);
 }
 
 const formatterSource = sourceFile.statements.filter((node) => ts.isVariableStatement(node)

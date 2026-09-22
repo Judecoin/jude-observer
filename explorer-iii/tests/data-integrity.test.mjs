@@ -1,10 +1,10 @@
+import { readProductionSource } from "./helpers/production-source.mjs";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 
-const workerSource = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+const workerSource = await readProductionSource(new URL("../worker/index.ts", import.meta.url));
 const sourceFile = ts.createSourceFile(
   "worker/index.ts",
   workerSource,
@@ -35,12 +35,13 @@ function calledFunctionNames(declaration) {
   return names;
 }
 
-function loadIntegrityHelpers() {
+function loadIntegrityHelpers(responseData = {}) {
   const instrumented = [
     functionSource("classifyTransaction"),
     functionSource("verifiedChainTransactionDetails"),
     functionSource("requireSynchronizedPoolQuorum"),
-    "module.exports = { verifiedChainTransactionDetails, requireSynchronizedPoolQuorum };",
+    functionSource("rpcFetchNode"),
+    "module.exports = { verifiedChainTransactionDetails, requireSynchronizedPoolQuorum, rpcFetchNode };",
   ].join("\n\n");
   const compiled = ts.transpileModule(instrumented, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
@@ -57,12 +58,25 @@ function loadIntegrityHelpers() {
     String,
     Error,
     JSON,
+    AbortController,
+    setTimeout,
+    clearTimeout,
+    JUDECOIN_EMISSION_API: "https://emission.example/api",
+    fetch: async () => Response.json(responseData),
   }, { filename: "worker-integrity-helpers.cjs" });
   return testModule.exports;
 }
 
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
+
+test("RPC status validation preserves the emission API success response", async () => {
+  const data = { status: "success", data: { coinbase: 50000, blk_no: 1000 } };
+  const { rpcFetchNode } = loadIntegrityHelpers(data);
+  const response = await rpcFetchNode("https://emission.example/api", "");
+  assert.deepEqual(response.data, data);
+  await assert.rejects(rpcFetchNode("https://node.example", "/get_info"), /RPC status: success/);
+});
 
 function transactionDetail(hash, parsedOverrides = {}, overrides = {}) {
   return {
