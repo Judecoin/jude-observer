@@ -1,9 +1,7 @@
 import { EXPLORER_PAGE_SIZE, JUDECOIN_EMISSION_API } from "./constants";
 import { cachedRpcFetchNode, cachedRpcFetch, cachedJsonRpc } from "./rpc";
-import type { RpcEmission, RpcInfo, RpcHeader, DecodedBlock, RpcTransactions, RpcServiceNode } from "./rpc-types";
-import { serviceNodeStatesRequest, buildServiceNodesSnapshot } from "./service-nodes";
-import { quorumPageSnapshot } from "./quorums";
-import { verifiedChainTransactionDetails } from "./transactions";
+import type { RpcEmission, RpcInfo, RpcHeader, DecodedBlock, RpcTransactions } from "./rpc-types";
+import { availableChainTransactionDetails } from "./transactions";
 import deregisteredHistory from "../data/deregistered-service-nodes.json";
 import { explorerPageSize } from "./pagination";
 import { json } from "./responses";
@@ -15,29 +13,28 @@ async function chainSnapshot(
   blockPageSize = EXPLORER_PAGE_SIZE,
   transactionPageSize = EXPLORER_PAGE_SIZE,
   quorumPageSize = EXPLORER_PAGE_SIZE,
+  overviewOnly = false,
 ) {
 
-  const emissionSnapshotPromise = cachedRpcFetchNode<RpcEmission>(JUDECOIN_EMISSION_API, "").catch(() => null);
+  const emissionSnapshotPromise = overviewOnly ? Promise.resolve(null)
+    : cachedRpcFetchNode<RpcEmission>(JUDECOIN_EMISSION_API, "", undefined, 2_500).catch(() => null);
   const infoResponse = await cachedRpcFetch<RpcInfo>("/get_info");
   const info = infoResponse.data;
   if (info?.status !== "OK" || !Number.isInteger(info.height)) throw new Error("Invalid Judecoin node response");
 
   const topHeight = Math.max(0, info.height - 1);
 
-  const serviceNodesResponsePromise = serviceNodeStatesRequest(topHeight);
-
-  const quorumSnapshotPromise = quorumPageSnapshot(topHeight, quorumPage, quorumPageSize).catch(() => null);
   const transactionScanSize = Math.max(160, transactionPageSize * 32);
   const transactionEndHeight = Math.max(0, topHeight - transactionPage * transactionScanSize);
   const startHeight = Math.max(0, transactionEndHeight - (transactionScanSize - 1));
   const blockEndHeight = Math.max(0, topHeight - blockPage * blockPageSize);
   const blockStartHeight = Math.max(0, blockEndHeight - (blockPageSize - 1));
-  const reuseTransactionHeaders = blockPage === 0 && transactionPage === 0;
+  const reuseTransactionHeaders = overviewOnly || (blockPage === 0 && transactionPage === 0);
 
   const [headersResponse, blockHeadersResponse] = await Promise.all([
     cachedJsonRpc("get_block_headers_range", {
-      start_height: startHeight,
-      end_height: transactionEndHeight,
+      start_height: overviewOnly ? blockStartHeight : startHeight,
+      end_height: overviewOnly ? blockEndHeight : transactionEndHeight,
       fill_pow_hash: false,
       get_tx_hashes: true,
     }),
@@ -65,9 +62,13 @@ async function chainSnapshot(
       start_height: topHeight, end_height: topHeight, fill_pow_hash: false,
     }).then((response) => (response.data?.result?.headers || []).find((header: RpcHeader) => header.height === topHeight));
   const latestBlockHeaders = [...blockHeaders].reverse().slice(0, blockPageSize);
-  const latestBlockDetailsPromise = Promise.all(latestBlockHeaders.map(async (header) => {
-    const response = await cachedJsonRpc("get_block", { height: header.height });
-    return JSON.parse(response.data?.result?.json || "{}") as DecodedBlock;
+  const latestBlockDetailsPromise = overviewOnly ? Promise.resolve([] as Array<DecodedBlock | null>) : Promise.all(latestBlockHeaders.map(async (header) => {
+    try {
+      const response = await cachedJsonRpc("get_block", { height: header.height });
+      return JSON.parse(response.data?.result?.json || "{}") as DecodedBlock;
+    } catch {
+      return null;
+    }
   }));
   const transactionBlocks = newest.filter((header) => header.num_txes > 0).slice(0, transactionPageSize);
   const transactionGroups = transactionBlocks.map((header) => {
@@ -85,13 +86,11 @@ async function chainSnapshot(
     ...transactionBase.map((transaction) => transaction.hash),
     ...latestBlockHeaders.flatMap((header) => Array.isArray(header.tx_hashes) ? header.tx_hashes : []),
   ])];
-  const transactionDetailsPromise = requestedTxHashes.length ? cachedRpcFetch<RpcTransactions>("/get_transactions", {
+  const transactionDetailsPromise = !overviewOnly && requestedTxHashes.length ? cachedRpcFetch<RpcTransactions>("/get_transactions", {
     method: "POST",
     body: JSON.stringify({ txs_hashes: requestedTxHashes, decode_as_json: true, tx_extra: true }),
-  }) : { data: { txs: [] } };
-  const [serviceNodesResponse, resolvedQuorumSnapshot, emissionResponse, latestBlockDetails, transactionDetailsResponse, tipHeader] = await Promise.all([
-    serviceNodesResponsePromise,
-    quorumSnapshotPromise,
+  }).catch(() => null) : Promise.resolve(null);
+  const [emissionResponse, latestBlockDetails, transactionDetailsResponse, tipHeader] = await Promise.all([
     emissionSnapshotPromise,
     latestBlockDetailsPromise,
     transactionDetailsPromise,
@@ -101,21 +100,11 @@ async function chainSnapshot(
   const latestBlockTimestamp = Number(tipHeader.timestamp);
   const latestBlockAgeSeconds = latestBlockTimestamp > 0 ? Math.max(0, Math.floor(Date.now() / 1000) - latestBlockTimestamp) : Number.MAX_SAFE_INTEGER;
   const targetSeconds = Math.max(1, Number(info.target || 180));
-  const serviceNodeTopHeight = Number(serviceNodesResponse.data?.info?.height) - 1;
-  const serviceNodeStatesResult = serviceNodesResponse.data?.serviceNodeStates;
-  if (!Array.isArray(serviceNodeStatesResult)) {
-    throw new Error("Invalid Judecoin service-node response");
-  }
-  const serviceNodeStates = serviceNodeStatesResult as RpcServiceNode[];
-  const currentServiceNodeStates = serviceNodeStates.filter(
-    (node) => node.requested_unlock_height === 0 || node.requested_unlock_height > serviceNodeTopHeight,
-  );
-  let quorumSnapshot: Awaited<ReturnType<typeof quorumPageSnapshot>> = {
+  const quorumSnapshot = {
     live: false, fetchedAt: new Date().toISOString(), height: topHeight,
     source: "Judecoin mainnet quorum data", type: "Service Node testing", quorumType: 0,
     trusted: false, page: quorumPage, pageSize: quorumPageSize, hasOlder: true, truncated: false, records: [], unavailable: ["Checkpoint", "Blink", "Pulse"],
   };
-  if (resolvedQuorumSnapshot) quorumSnapshot = resolvedQuorumSnapshot;
   const emissionRecord = emissionResponse?.data?.status === "success" ? emissionResponse.data?.data : null;
   const minedSupply = Number(emissionRecord?.coinbase || 0);
   const supplyHeight = Number(emissionRecord?.blk_no || 0);
@@ -123,13 +112,19 @@ async function chainSnapshot(
     && minedSupply > 0
     && Number.isInteger(supplyHeight)
     && Math.abs(supplyHeight - topHeight) <= 1_000;
-  const transactionDetails = verifiedChainTransactionDetails(
+  const transactionDetails = availableChainTransactionDetails(
     requestedTxHashes,
-    transactionDetailsResponse.data?.txs,
+    transactionDetailsResponse?.data?.txs ?? [],
   );
+  const pendingDetails = overviewOnly
+    || latestBlockDetails.length !== latestBlockHeaders.length
+    || latestBlockDetails.some((block) => block == null)
+    || requestedTxHashes.some((hash) => !transactionDetails.has(hash.toLowerCase()));
 
   return {
     live: true,
+    ...(pendingDetails ? { pendingDetails: true } : {}),
+    ...(overviewOnly ? { headerOnly: true } : {}),
     source: "Judecoin mainnet",
     node: new URL(infoResponse.node).hostname,
     fetchedAt: new Date().toISOString(),
@@ -137,6 +132,7 @@ async function chainSnapshot(
       height: topHeight,
       difficulty: Number(info.difficulty || tipHeader.difficulty),
       targetSeconds,
+      targetVerified: Number.isInteger(info.target) && Number(info.target) > 0,
       hashrate: Number(info.difficulty || tipHeader.difficulty) / targetSeconds,
       hardFork: Number(info.hard_fork || tipHeader.major_version),
       protocol: String(info.version || tipHeader.major_version),
@@ -160,10 +156,26 @@ async function chainSnapshot(
     },
     pagination: { blockPage, transactionPage, pageSize: blockPageSize, transactionScanSize },
     blocks: latestBlockHeaders.map((header, index) => {
-      const parsed = latestBlockDetails[index] || {};
+      const parsed = latestBlockDetails[index];
+      const blockTransactionHashes = Array.isArray(parsed?.tx_hashes) ? parsed.tx_hashes : [];
+      const complete = parsed != null && blockTransactionHashes.every(
+        (hash: string) => transactionDetails.has(String(hash).toLowerCase()),
+      );
+      if (!complete) return {
+        height: header.height,
+        timestamp: header.timestamp,
+        hash: header.hash,
+        txs: header.num_txes,
+        size: header.block_size,
+        difficulty: header.difficulty,
+        fee: null,
+        reward: null,
+        inputs: null,
+        outputs: null,
+      };
       const minerInputs = Array.isArray(parsed.miner_tx?.vin) && parsed.miner_tx.vin.some((input) => input?.gen) ? 0 : (parsed.miner_tx?.vin?.length || 0);
       const minerOutputs = parsed.miner_tx?.vout?.length || 0;
-      const regularTransactions = (parsed.tx_hashes || []).map(
+      const regularTransactions = blockTransactionHashes.map(
         (hash: string) => transactionDetails.get(String(hash).toLowerCase()),
       ).filter(Boolean) as Array<{ fee: number; inputs: number; outputs: number }>;
       const blockFee = regularTransactions.reduce((sum, transaction) => sum + transaction.fee, 0);
@@ -181,11 +193,11 @@ async function chainSnapshot(
     }; }),
     transactions: transactionBase.map((transaction) => {
       const details = transactionDetails.get(transaction.hash.toLowerCase());
-      if (!details) throw new Error(`Verified transaction details missing for ${transaction.hash}`);
+      if (!details) return null;
       return { ...transaction, txType: details.txType, size: details.size, fee: details.fee, reward: 0, inputs: details.inputs, outputs: details.outputs };
-    }),
-    serviceNodesHeight: serviceNodeTopHeight,
-    serviceNodes: buildServiceNodesSnapshot(currentServiceNodeStates, serviceNodeTopHeight),
+    }).filter((transaction) => transaction !== null),
+    serviceNodesHeight: null,
+    serviceNodes: null,
     quorums: quorumSnapshot,
     deregisteredServiceNodes: {
       total: deregisteredHistory.nodes.length,
@@ -194,7 +206,7 @@ async function chainSnapshot(
       indexedThrough: deregisteredHistory.sourceHeight,
       generatedAt: deregisteredHistory.generatedAt,
       nodes: deregisteredHistory.nodes
-        .map((node) => ({ ...node })),
+        .map((node) => ({ ...node, unlockHeightVerified: false })),
     },
   };
 }
@@ -210,6 +222,7 @@ export async function createChainResponse(url: URL) {
     const snapshot = await chainSnapshot(
       blockPage, transactionPage, quorumPage,
       blockPageSize, transactionPageSize, quorumPageSize,
+      url.searchParams.get("overview") === "1",
     );
     const requestedTip = Number.parseInt(url.searchParams.get("tip") || "", 10);
     if (Number.isInteger(requestedTip) && requestedTip >= 0 && snapshot.network.height < requestedTip) {

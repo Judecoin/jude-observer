@@ -1,4 +1,4 @@
-
+export const JUDE_RELEASE_VERSION = "v3.2.0";
 
 export const TX_TYPE_META: Record<string, { label: string; icon?: string }> = {
   transfer: { label: "Transfer", icon: "/tx-types/transfer.png" }, registration: { label: "Registration", icon: "/tx-types/registration.png" },
@@ -16,6 +16,12 @@ export const PAGE_SIZE_OPTIONS = [5, 10, 20, 25, 50, 100] as const;
 
 export const SNAPSHOT_CACHE_TTL_MS = 5_000;
 
+export const SNAPSHOT_CACHE_MAX_ENTRIES = 24;
+
+export const LIVE_REQUEST_TIMEOUT_MS = 12_000;
+
+export const CHAIN_REQUEST_TIMEOUT_MS = 20_000;
+
 export const NETWORK_REFRESH_DELAY_MS = 2_000;
 
 export const TRANSACTION_POOL_REFRESH_DELAY_MS = 5_000;
@@ -28,7 +34,7 @@ export const SERVICE_NODE_REFRESH_DELAY_MS = 15_000;
 
 export const SERVICE_NODE_CATCH_UP_RETRY_DELAY_MS = 5_000;
 
-export const SERVICE_NODE_REQUEST_TIMEOUT_MS = 120_000;
+export const SERVICE_NODE_REQUEST_TIMEOUT_MS = 45_000;
 
 export const HIDDEN_TAB_REFRESH_DELAY_MS = 30_000;
 

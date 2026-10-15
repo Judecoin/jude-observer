@@ -1,4 +1,4 @@
-import type * as React from "react";
+import { useEffect, useRef, type CSSProperties } from "react";
 import type { useExplorer } from "../use-explorer";
 import {
   compact,
@@ -9,66 +9,82 @@ import {
   atomicJude,
   inOut,
   jude,
-  estimatedBlockWait,
+  serviceNodeUnlockEstimate,
   isBlockHeightLabel,
 } from "../formatters";
-import { TX_TYPE_LEGEND } from "../constants";
-import { TxTypeBadge, PaginationControls, AwaitingContributionsPanel, DetailValue } from "./shared";
+import { TX_TYPE_LEGEND, JUDE_RELEASE_VERSION } from "../constants";
+import { TxTypeBadge, PaginationControls, AwaitingContributionsPanel, DetailValue, IdentifierCell } from "./shared";
+import { UiIcon } from "./ui-icons";
+import { NetworkOverview } from "./network-visuals";
+import { StatNetworkVisual } from "./stat-network-visual";
+import { LedgerPage } from "./ledger-page";
+import { BlockRecords, LedgerPagination, TransactionRecords } from "./ledger-tables";
 
-export function ExplorerView({ particles, serviceNodesOnly, statisticsOnly, openSection, search, query, setQuery, searchLoading, message, connection, liveNetwork, serviceNodes, transactionPool, openTransaction, blockPage, blockPageSize, setBlockPage, setBlockPageSize, prefetchSnapshot, blocks, openBlock, snapshot, blocksSelectionMatches, transactionPage, transactionPageSize, setTransactionPage, setTransactionPageSize, transactions, transactionsSelectionMatches, activeEnd, awaitingEnd, offlineEnd, statusTotal, activeServiceNodes, unlockingServiceNodes, awaitingServiceNodes, decommissionedServiceNodes, lockedDeregisteredServiceNodeTotal, currentServiceNodeTotal, stakingRatio, stakingRatioWidth, minedSupply, setLifecycleView, lifecycleView, setDeregisteredNodePage, deregisteredTotal, deregisteredIndexedThrough, deregisteredNodes, deregisteredNodePage, deregisteredNodeLastPage, deregisteredNodePageSize, setDeregisteredNodePageSize, serviceNodeHeight, openServiceNode, paginatedDeregisteredNodes, serviceNodeQuery, setServiceNodeQuery, setServiceNodePage, filteredServiceNodes, awaitingServiceNodeRows, paginatedServiceNodes, serviceNodePage, serviceNodeLastPage, serviceNodePageSize, setServiceNodePageSize, latestQuorum, quorumPage, quorums, quorumPageSize, quorumLoading, changeQuorumPage, changeQuorumPageSize, homepageServiceNodes, detailPending, closeDetail, detail, detailBackdropRef, detailRenderKey }: ReturnType<typeof useExplorer>) {
+export function ExplorerView({ serviceNodesOnly, statisticsOnly, blocksOnly, transactionsOnly, ledger, homepageBlockLedger, homepageTransactionLedger, homepageBlocks, homepageTransactions, homepageServiceNodePage, homepageServiceNodePageSize, homepageServiceNodeLastPage, setHomepageServiceNodePage, setHomepageServiceNodePageSize, search, query, setQuery, searchLoading, message, connection, liveNetwork, serviceNodes, transactionPool, openTransaction, blockPage, prefetchSnapshot, openBlock, snapshot, activeEnd, awaitingEnd, offlineEnd, statusTotal, activeServiceNodes, unlockingServiceNodes, awaitingServiceNodes, decommissionedServiceNodes, lockedDeregisteredServiceNodeTotal, currentServiceNodeTotal, stakingRatio, stakingRatioWidth, minedSupply, setLifecycleView, lifecycleView, setDeregisteredNodePage, deregisteredTotal, deregisteredIndexedThrough, deregisteredNodes, deregisteredNodePage, deregisteredNodeLastPage, deregisteredNodePageSize, setDeregisteredNodePageSize, serviceNodeHeight, openServiceNode, paginatedDeregisteredNodes, serviceNodeQuery, setServiceNodeQuery, setServiceNodePage, filteredServiceNodes, awaitingServiceNodeRows, paginatedServiceNodes, serviceNodePage, serviceNodeLastPage, serviceNodePageSize, setServiceNodePageSize, latestQuorum, quorumPage, quorums, quorumPageSize, quorumLoading, changeQuorumPage, changeQuorumPageSize, homepageServiceNodes, detailPending, closeDetail, detail, detailBackdropRef, detailRenderKey, displayNow }: ReturnType<typeof useExplorer>) {
+  const homeOnly = !serviceNodesOnly && !statisticsOnly && !blocksOnly && !transactionsOnly;
+  const ProductTitle = homeOnly ? "h1" : "span";
+  const hasOutputUnlock = Boolean(detail?.outputs?.some((output) => Number.isFinite(output.unlockHeight) && output.unlockHeight > 0));
+  const particles = Array.from({ length: 24 }, (_, index) => index);
+  const globalSearchRef = useRef<HTMLInputElement>(null);
+  const searchFocusRequested = useRef(false);
+
+  useEffect(() => {
+    const focusSearch = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k" && globalSearchRef.current) {
+        event.preventDefault();
+        searchFocusRequested.current = Boolean(detail);
+        closeDetail();
+        if (!detail) globalSearchRef.current.focus();
+      }
+    };
+    window.addEventListener("keydown", focusSearch);
+    return () => window.removeEventListener("keydown", focusSearch);
+  }, [closeDetail, detail]);
+
+  useEffect(() => {
+    if (!detail && searchFocusRequested.current) {
+      searchFocusRequested.current = false;
+      globalSearchRef.current?.focus();
+    }
+  }, [detail]);
 
   return (
     <main>
       <div className="ambient ambient-one" />
       <div className="ambient ambient-two" />
       <div className="particle-field" aria-hidden="true">
-        {particles.map((particle) => <i key={particle} style={{ "--i": particle } as React.CSSProperties} />)}
+        {particles.map((particle) => <i key={particle} style={{ "--i": particle } as CSSProperties} />)}
       </div>
 
-      <nav className="nav shell">
-        <a className="brand" href="/" aria-label="Judecoin Explorer home">
+      <nav className="nav shell" aria-label="Primary navigation">
+        <a className="brand" href="/" aria-label="Judecoin Explorer home" onClick={closeDetail}>
           <span className="brand-mark"><img src="/judecoin-logo-minimal-ring-transparent.png" alt="" /></span>
-          <span><b>JUDECOIN</b></span>
+          <ProductTitle className="nav-product-title" aria-label="Judecoin Blockchain Explorer"><b>{"Judecoin"}</b>{" "}<span>{"Blockchain Explorer"}</span></ProductTitle>
         </a>
         <div className="nav-links">
-          <a className={!serviceNodesOnly && !statisticsOnly ? "active" : undefined} href="/">{"Home"}</a>
-          <a className={serviceNodesOnly ? "active" : undefined} href="/service-nodes">{"Service Nodes"}</a>
-          <a className={statisticsOnly ? "active" : undefined} href="/statistics">{"Statistics"}</a>
-          <button type="button" onClick={() => openSection("blocks")}>{"Blocks"}</button>
-          <button type="button" onClick={() => openSection("transactions")}>{"Transactions"}</button>
-          <button type="button" onClick={() => openSection("quorums")}>{"Quorums"}</button>
+          <a className={homeOnly ? "active" : undefined} href="/" aria-label="Home" aria-current={homeOnly ? "page" : undefined} onClick={closeDetail}>{"Home"}</a>
+          <a className={serviceNodesOnly ? "active" : undefined} href="/service-nodes" aria-label="Service Nodes" aria-current={serviceNodesOnly ? "page" : undefined} onClick={closeDetail}>{"Service Nodes"}</a>
+          <a className={statisticsOnly ? "active" : undefined} href="/statistics" aria-label="Statistics" aria-current={statisticsOnly ? "page" : undefined} onClick={closeDetail}>{"Statistics"}</a>
+          <a className={blocksOnly ? "active" : undefined} href="/blocks" aria-label="Blocks" aria-current={blocksOnly ? "page" : undefined} onClick={closeDetail}>{"Blocks"}</a>
+          <a className={transactionsOnly ? "active" : undefined} href="/transactions" aria-label="Transactions" aria-current={transactionsOnly ? "page" : undefined} onClick={closeDetail}>{"Transactions"}</a>
         </div>
       </nav>
 
-      {!serviceNodesOnly && !statisticsOnly && <>
+      <div className="workspace-content" inert={detail ? true : undefined}>
+      {homeOnly && <>
       <section className="hero shell" id="top">
-        <h1>{"See the chain"}<br /><em>{"Not the people"}</em></h1>
-        <p className="hero-copy">{"A privacy-first window into the Judecoin network. Inspect public blocks, transactions, Service Nodes, and consensus data, while the participants, addresses, and amounts of private transfers remain hidden."}</p>
-        <form className="search" onSubmit={search}>
-          <span className="search-icon">⌕</span>
-          <input aria-label={"Search the blockchain"} placeholder={"Search by block height, block hash, transaction hash, or node key"} value={query} onChange={(event) => setQuery(event.target.value)} />
-          <button disabled={searchLoading}>{searchLoading ? "SEARCHING" : "EXPLORE"} <span>→</span></button>
+        <h2 className="hero-statement"><span>{"Validation"}</span>{" "}<em>{"without surveillance."}</em></h2>
+        <p className="hero-manifesto">{"Build it. Verify it. Own it."}</p>
+        <p className="hero-copy">{"Privacy is infrastructure. Private value. Public verification. Explore the Judecoin mainnet."}</p>
+        <form className="search" role="search" onSubmit={search}>
+          <span className="search-icon"><UiIcon name="search" size={20} /></span>
+          <input ref={globalSearchRef} type="search" aria-label={"Search the blockchain"} placeholder={"Search by block height, block hash, transaction hash, or node key"} value={query} onChange={(event) => setQuery(event.target.value)} autoComplete="off" spellCheck={false} autoCapitalize="none" />
+          <button type="submit" disabled={searchLoading}>{searchLoading ? "SEARCHING" : "SEARCH"} <span>→</span></button>
         </form>
         {message && <div className="search-message" role="status">{message}</div>}
-        <div className="privacy-note"><span>◉</span><p><b>{"Privacy preserved."}</b> {"Private transfer data remains hidden. Public Service Node registration fields are shown only when they are part of the protocol's public state."}</p></div>
       </section>
 
-      <section className="metrics shell" id="network" aria-busy={connection === "loading"}>
-        <span className="sr-only" role="status" aria-live="polite">{connection === "live" ? "Live Judecoin mainnet values verified." : "Displaying zero or the last verified values while the mainnet refresh completes."}</span>
-        <article><small>{"CHAIN HEIGHT"}</small><strong className="block-height notranslate" translate="no">{liveNetwork ? compact(liveNetwork.height) : "0"}</strong><span className={connection === "live" && liveNetwork?.synced ? "trend" : undefined}>{!liveNetwork ? "No verified snapshot · initial values" : connection !== "live" ? "Last verified mainnet snapshot" : liveNetwork.synced ? "Mainnet · synced" : "Mainnet · delayed"}</span></article>
-        <article><small>{"NETWORK HASH RATE"}</small><strong className="notranslate" translate="no">{(liveNetwork?.hashrate ? liveNetwork.hashrate / 1e3 : 0).toFixed(2)} <i>kH/s</i></strong><span>{"Estimated from difficulty and target time"}</span></article>
-        <article><small>{"NETWORK DIFFICULTY"}</small><strong className="notranslate" translate="no">{liveNetwork ? difficulty(liveNetwork.difficulty) : "0"}</strong><span>{"Reported by the protocol"}</span></article>
-        <article><small>{"TARGET BLOCK TIME"}</small><strong className="notranslate" translate="no">{liveNetwork?.targetSeconds ?? 0} <i>{"sec"}</i></strong><span>{"Protocol target"}</span></article>
-        <article><small>{"LATEST BLOCK AGE"}</small><strong className="notranslate" translate="no">{liveNetwork ? age(liveNetwork.latestBlockTimestamp) : "0"}</strong><span className={liveNetwork?.synced ? "trend" : undefined}>{"Time since latest block"}</span></article>
-        <article><small>{"SERVICE NODES"}</small><strong className="notranslate" translate="no">{compact(serviceNodes?.active ?? 0)}</strong><span>{"Active on mainnet"}</span></article>
-        <article className="block-size-card">
-          <div className="block-size-heading"><small>{"BLOCK SIZE"}</small>{liveNetwork && liveNetwork.blockSizeLimit > 0 && <b className="block-size-ratio">{`${((liveNetwork.blockSizeMedian / liveNetwork.blockSizeLimit) * 100).toFixed(1)}%`}</b>}</div>
-          <strong className="block-size-value notranslate" translate="no">{liveNetwork ? bytes(liveNetwork.blockSizeMedian) : "0 B"}</strong>
-          {liveNetwork && <span className="block-size-limit">{`Limit ${bytes(liveNetwork.blockSizeLimit)}`}</span>}
-          <span className="block-size-caption">{"Median / protocol limit"}</span>
-        </article>
-        <article><small>{"PROTOCOL VERSION"}</small><strong className="notranslate" translate="no">{liveNetwork?.protocol ?? "0"}</strong><span>{`Hard fork v${liveNetwork?.hardFork ?? 0}`}</span></article>
-      </section>
+      <NetworkOverview network={liveNetwork} serviceNodes={serviceNodes} snapshot={snapshot} latestQuorum={latestQuorum} connection={connection} displayNow={displayNow} blockPage={blockPage} openBlock={openBlock} openServiceNode={openServiceNode} />
 
       <section className="tx-type-legend shell" aria-label="Transaction type legend">
         <div className="tx-type-legend-title"><span>{"Transaction Type Legend"}</span></div>
@@ -81,11 +97,11 @@ export function ExplorerView({ particles, serviceNodesOnly, statisticsOnly, open
           <div className="pool-summary"><i />{`${transactionPool!.count} pending`} · {bytes(transactionPool!.totalBytes)}</div>
         </div>
         <div className="table-card pool-table">
-          <div className="table-head"><span>{"AGE"}</span><span>{"TRANSACTION HASH"}</span><span>{"TX TYPE"}</span><span>{"FEE / PER KB"}</span><span>{"IN/OUT"}</span><span>{"TX SIZE"}</span></div>
+          <div className="table-head"><span>{"POOL AGE [h:m:s]"}</span><span>{"TRANSACTION HASH"}</span><span>{"TYPE"}</span><span title="Total fee in JUDE / fee rate in JUDE per 1,000 bytes">{"FEE (JUDE) / RATE (JUDE/kB)"}</span><span>{"IN/OUT"}</span><span>{"SIZE"}</span></div>
           {transactionPool!.transactions.map((transaction) => (
             <div className="table-row transaction-row-link" key={transaction.hash} role="button" tabIndex={0} aria-label={`Open transaction ${transaction.hash}`} onClick={() => openTransaction(transaction.hash, transaction.txType)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openTransaction(transaction.hash, transaction.txType); } }}>
-              <span>{transaction.receivedAt > 0 ? age(transaction.receivedAt) : "PENDING"}</span>
-              <span className="tx-hash detail-link">{hashPreview(transaction.hash)}</span>
+              <span>{transaction.receivedAt > 0 ? age(transaction.receivedAt, displayNow) : "PENDING"}</span>
+              <IdentifierCell className="tx-hash detail-link" value={transaction.hash} label="transaction hash" />
               <TxTypeBadge type={transaction.txType} compact iconOnly />
               <span>{`${atomicJude(transaction.fee)} / ${transaction.size > 0 ? atomicJude(transaction.fee / (transaction.size / 1000)) : "N/A"}`}</span>
               <span>{inOut(transaction.inputs, transaction.outputs)}</span>
@@ -97,58 +113,37 @@ export function ExplorerView({ particles, serviceNodesOnly, statisticsOnly, open
 
       <section className={`stream shell ${transactionPool?.available && transactionPool.count ? "" : "first-data-section"}`}>
         <div className="section-heading" id="blocks">
-          <div><h2>{"Latest Blocks"}</h2></div>
-          <PaginationControls page={blockPage} lastPage={liveNetwork ? Math.floor(liveNetwork.height / blockPageSize) : 0} pageSize={blockPageSize} onPageChange={setBlockPage} onPageSizeChange={(size) => { setBlockPageSize(size); setBlockPage(0); }} onPrefetchPage={(page) => prefetchSnapshot({ blockPage: page })} />
+          <div><h2>{"Latest Blocks"}</h2></div><a className="section-link" href="/blocks">{"VIEW ALL BLOCKS →"}</a>
         </div>
-        <div className="table-card blocks-table">
-          <div className="table-head"><span>{"HEIGHT"}</span><span>{"AGE [h:m:s]"}</span><span>{"TYPE"}</span><span>{"BLOCK HASH"}</span><span>{"TXS"}</span><span>{"SIZE"}</span><span>{"DIFFICULTY"}</span><span>{"FEE (JUDE)"}</span><span>{"REWARD (JUDE)"}</span><span>{"IN/OUT"}</span></div>
-          {blocks.map((block, index) => (
-            <div className="table-row block-row-link" key={block.height} role="button" tabIndex={0} aria-label={`Open block ${block.height}`} onClick={() => openBlock(block.height)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openBlock(block.height); } }}>
-              <span className="height detail-link"><i>{index === 0 ? "●" : "◆"}</i>{compact(block.height)}</span>
-              <span>{block.age}</span><TxTypeBadge type="block-reward" compact iconOnly /><span className="block-hash detail-link">{hashPreview(block.hash)}</span><span>{block.txs}</span><span>{block.size}</span><span>{block.difficulty}</span><span>{block.fee == null ? "N/A" : atomicJude(block.fee)}</span><span>{block.reward == null ? "N/A" : atomicJude(block.reward)}</span><span>{inOut(block.inputs, block.outputs)}</span>
-            </div>
-          ))}
-          {(!snapshot || !blocksSelectionMatches) && <div className="nodes-loading notranslate" translate="no">{"0 BLOCK RECORDS · No verified snapshot for this page yet"}</div>}
-        </div>
+        <BlockRecords blocks={homepageBlocks} openBlock={openBlock} loadingMessage={homepageBlockLedger.loading ? "Fetching block records…" : homepageBlockLedger.error || undefined} />
+        <LedgerPagination ledger={homepageBlockLedger} label="Blocks" latestHref="/#blocks" />
       </section>
 
       <section className="stream shell" id="transactions">
         <div className="section-heading">
-          <div><h2>{"Latest Transactions"}</h2></div>
-          <div className="heading-actions"><PaginationControls page={transactionPage} lastPage={liveNetwork && snapshot ? Math.floor(liveNetwork.height / snapshot.pagination.transactionScanSize) : 0} pageSize={transactionPageSize} onPageChange={setTransactionPage} onPageSizeChange={(size) => { setTransactionPageSize(size); setTransactionPage(0); }} onPrefetchPage={(page) => prefetchSnapshot({ transactionPage: page })} /></div>
+          <div><h2>{"Latest Transactions"}</h2></div><a className="section-link" href="/transactions">{"VIEW ALL TRANSACTIONS →"}</a>
         </div>
-        <div className="table-card tx-table">
-          <div className="table-head"><span>{"BLOCK"}</span><span>{"AGE [h:m:s]"}</span><span>{"TYPE"}</span><span>{"TRANSACTION HASH"}</span><span>{"SIZE"}</span><span>{"CONFIRMATIONS"}</span><span>{"FEE (JUDE)"}</span><span>{"IN/OUT"}</span></div>
-          {transactions.map((tx, index) => (
-            <div className="table-row transaction-row-link" key={tx.hash} role="button" tabIndex={0} aria-label={`Open transaction ${tx.hash}`} onClick={() => openTransaction(tx.hash, tx.txType)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openTransaction(tx.hash, tx.txType); } }}>
-              <span className="height"><i>{index === 0 ? "●" : "◆"}</i>{compact(tx.block)}</span><span>{tx.age}</span><TxTypeBadge type={tx.txType} compact iconOnly /><span className="tx-hash detail-link">{hashPreview(tx.hash)}</span><span>{tx.size}</span><span>{tx.confirmations}</span><span>{tx.fee == null ? "N/A" : atomicJude(tx.fee)}</span><span>{inOut(tx.inputs, tx.outputs)}</span>
-            </div>
-          ))}
-          {(!snapshot || !transactionsSelectionMatches) && <div className="nodes-loading notranslate" translate="no">{"0 TRANSACTION RECORDS · No verified snapshot for this page yet"}</div>}
-        </div>
+        <TransactionRecords transactions={homepageTransactions} openTransaction={openTransaction} loadingMessage={homepageTransactionLedger.loading ? "Fetching transaction records…" : homepageTransactionLedger.error || (homepageTransactionLedger.data?.rows.length === 0 ? homepageTransactionLedger.data.hasMore ? "No transactions in this block range. Continue to older blocks." : "No more confirmed transactions in this history." : undefined)} />
+        <LedgerPagination ledger={homepageTransactionLedger} label="Transactions" latestHref="/#transactions" />
       </section>
       </>}
+
+      {(blocksOnly || transactionsOnly) && <LedgerPage ledger={ledger} displayNow={displayNow} blocksOnly={blocksOnly} liveHeight={liveNetwork || ledger.data ? Math.max(liveNetwork?.height ?? 0, ledger.data?.height ?? 0) : null} query={query} setQuery={setQuery} search={search} searchLoading={searchLoading} message={message} searchRef={globalSearchRef} openBlock={openBlock} openTransaction={openTransaction} />}
 
       {statisticsOnly && <section className="statistics-page shell" id="statistics">
         <header className="statistics-hero">
           <div>
-            <h1>{"Judecoin network,"}<br /><em>{"at a glance."}</em></h1>
-            <p>{"Explore Judecoin blocks, transactions, Service Nodes, staking, and network activity in one place."}</p>
+            <h1>{"Network "}<em>{"Statistics"}</em></h1>
+            <p>{"Chain activity, Service Node status, staking, and protocol parameters."}</p>
           </div>
-          <div className="network-reactor" aria-label={`${serviceNodes?.active ?? 0} active service nodes`}>
-            <i className="reactor-grid" /><i className="reactor-beam" /><i className="reactor-base" />
-            <div className="reactor-cube"><i className="cube-front" /><i className="cube-back" /><i className="cube-left" /><i className="cube-right" /><i className="cube-top" /><i className="cube-bottom" /></div>
-            <i className="reactor-ring ring-one" /><i className="reactor-ring ring-two" /><i className="reactor-ring ring-three" />
-            {Array.from({ length: 8 }, (_, index) => <i className="reactor-particle" key={index} style={{ "--particle": index } as React.CSSProperties} />)}
-            <div className="reactor-value"><strong className="notranslate" translate="no">{compact(serviceNodes?.active ?? 0)}</strong><span>ACTIVE SERVICE NODES</span></div>
-          </div>
+          <StatNetworkVisual activeCount={serviceNodes?.active ?? null} connection={connection} />
         </header>
 
         <div className="statistics-primary-grid">
-          <article className="stat-command stat-height"><small>{"CHAIN HEIGHT"}</small><strong className="block-height notranslate" translate="no">{compact(liveNetwork?.height ?? 0)}</strong></article>
-          <article className="stat-command"><small>{"NETWORK HASH RATE"}</small><strong className="notranslate" translate="no">{`${((liveNetwork?.hashrate ?? 0) / 1e3).toFixed(2)} kH/s`}</strong></article>
-          <article className="stat-command"><small>{"NETWORK DIFFICULTY"}</small><strong className="notranslate" translate="no">{liveNetwork ? difficulty(liveNetwork.difficulty) : "0"}</strong></article>
-          <article className="stat-command"><small>{"PENDING TRANSACTIONS"}</small><strong className="notranslate" translate="no">{compact(transactionPool?.available ? transactionPool.count : 0)}</strong></article>
+          <article className="stat-command stat-height"><small>{"CHAIN HEIGHT"}</small><strong className="block-height notranslate" translate="no">{liveNetwork ? compact(liveNetwork.height) : "—"}</strong></article>
+          <article className="stat-command"><small>{"NETWORK HASH RATE"}</small><strong className="notranslate" translate="no">{liveNetwork ? `${(liveNetwork.hashrate / 1e3).toFixed(2)} kH/s` : "—"}</strong></article>
+          <article className="stat-command"><small>{"NETWORK DIFFICULTY"}</small><strong className="notranslate" translate="no">{liveNetwork ? difficulty(liveNetwork.difficulty) : "—"}</strong></article>
+          <article className="stat-command"><small>{"PENDING TRANSACTIONS"}</small><strong className="notranslate" translate="no">{transactionPool?.available ? compact(transactionPool.count) : "—"}</strong></article>
         </div>
 
         <div className="statistics-dashboard">
@@ -157,41 +152,41 @@ export function ExplorerView({ particles, serviceNodesOnly, statisticsOnly, open
             <div className="node-health-content">
               <div className="status-pie" style={{ background: serviceNodes ? `conic-gradient(#64ffd0 0 ${activeEnd}%, #b58aff ${activeEnd}% ${awaitingEnd}%, #f1b956 ${awaitingEnd}% ${offlineEnd}%, #ef677b ${offlineEnd}% 100%)` : "rgba(22,58,49,.55)" }}>
                 <i className="pie-grid" /><i className="pie-sweep" />
-                <div className="pie-core"><strong className="notranslate" translate="no">{compact(serviceNodes ? statusTotal : 0)}</strong><span>{"TOTAL SHOWN"}</span></div>
+                <div className="pie-core"><strong className="notranslate" translate="no">{serviceNodes ? compact(statusTotal) : "—"}</strong><span>{"TOTAL SHOWN"}</span></div>
               </div>
               <div className="status-breakdown">
                 <dl className="status-ledger">
-                  <div><dt><i className="active-dot" />{"Active"}</dt><dd className="notranslate" translate="no">{compact(serviceNodes ? activeServiceNodes : 0)}</dd></div>
-                  <div title="Unlocking nodes remain included in Active until they leave the current Service Node list"><dt><i className="unlock-dot" />{"Unlocking · included in Active"}</dt><dd className="notranslate" translate="no">{compact(serviceNodes ? unlockingServiceNodes : 0)}</dd></div>
-                  <div><dt><i className="awaiting-dot" />{"Awaiting contributions"}</dt><dd className="notranslate" translate="no">{compact(serviceNodes ? awaitingServiceNodes : 0)}</dd></div>
-                  <div><dt><i className="offline-dot" />{"Decommissioned"}</dt><dd className="notranslate" translate="no">{compact(serviceNodes ? decommissionedServiceNodes : 0)}</dd></div>
-                  <div className="history-entry" title="Deregistered nodes whose stake remains locked on chain"><dt><i className="removed-dot" />{"Deregistered · Stake locked"}</dt><dd className="notranslate" translate="no">{compact(serviceNodes ? lockedDeregisteredServiceNodeTotal : 0)}</dd></div>
+                  <div><dt><i className="active-dot" />{"Active"}</dt><dd className="notranslate" translate="no">{serviceNodes ? compact(activeServiceNodes) : "—"}</dd></div>
+                  <div title="Unlocking nodes remain included in Active until they leave the current Service Node list"><dt><i className="unlock-dot" />{"Unlocking · included in Active"}</dt><dd className="notranslate" translate="no">{serviceNodes ? compact(unlockingServiceNodes) : "—"}</dd></div>
+                  <div><dt><i className="awaiting-dot" />{"Awaiting contributions"}</dt><dd className="notranslate" translate="no">{serviceNodes ? compact(awaitingServiceNodes) : "—"}</dd></div>
+                  <div><dt><i className="offline-dot" />{"Decommissioned"}</dt><dd className="notranslate" translate="no">{serviceNodes ? compact(decommissionedServiceNodes) : "—"}</dd></div>
+                  <div className="history-entry" title="Deregistered nodes whose stake remains locked on chain"><dt><i className="removed-dot" />{"Deregistered · Stake locked"}</dt><dd className="notranslate" translate="no">{serviceNodes ? compact(lockedDeregisteredServiceNodeTotal) : "—"}</dd></div>
                 </dl>
-                {serviceNodes ? <p className="status-summary" translate="no"><b>{compact(currentServiceNodeTotal)}</b>{" current + "}<b>{compact(lockedDeregisteredServiceNodeTotal)}</b>{" deregistered with stake still locked. "}<b>{compact(unlockingServiceNodes)}</b>{" unlocking nodes remain included in Active."}</p> : <p className="status-summary">No verified snapshot yet · initial values are 0</p>}
+                {serviceNodes ? <p className="status-summary" translate="no"><b>{compact(currentServiceNodeTotal)}</b>{" current + "}<b>{compact(lockedDeregisteredServiceNodeTotal)}</b>{" deregistered with stake still locked. "}<b>{compact(unlockingServiceNodes)}</b>{" unlocking nodes remain included in Active."}</p> : <p className="status-summary">Awaiting a verified snapshot</p>}
               </div>
             </div>
           </section>
 
           <section className="stats-panel staking-panel">
             <header><div><h2>{"Service Node Staking"}</h2></div></header>
-            <div className="stake-total"><span>{"TOTAL SERVICE NODE STAKE"}</span><strong className="notranslate" translate="no">{jude(serviceNodes?.totalContributed ?? 0)} <i>JUDE</i></strong></div>
+            <div className="stake-total"><span>{"TOTAL SERVICE NODE STAKE"}</span><strong className="notranslate" translate="no">{serviceNodes ? jude(serviceNodes.totalContributed) : "—"} <i>JUDE</i></strong></div>
             <div className={`stake-progress${stakingRatio == null ? " unavailable" : ""}`}><i style={{ width: `${stakingRatioWidth}%` }} /></div>
-            <div className="stake-scale"><span>0%</span><b className="notranslate" translate="no">{stakingRatio == null ? "No verified ratio · initial value" : `${stakingRatio.toFixed(2)}% of total mined supply`}</b><span>100%</span></div>
+            <div className="stake-scale"><span>0%</span><b className="notranslate" translate="no">{stakingRatio == null ? "Awaiting a verified ratio" : `${stakingRatio.toFixed(2)}% of total mined supply`}</b><span>100%</span></div>
             <div className="stake-mini-grid">
-              <div><small>{"REQUIREMENT"}</small><strong className="notranslate" translate="no">{jude(serviceNodes?.stakingRequirement ?? 0)}</strong><span>{"JUDE / node"}</span></div>
-              <div><small>{"TOTAL MINED SUPPLY"}</small><strong className="notranslate" translate="no">{minedSupply ? atomicJude(minedSupply) : "0"}</strong><span>{minedSupply == null ? "No verified supply · initial value" : "JUDE"}</span></div>
-              <div><small>{"CURRENT SERVICE NODES"}</small><strong className="notranslate" translate="no">{compact(serviceNodes?.total ?? 0)}</strong><span>{"Registered on mainnet"}</span></div>
-              <div><small>{"STAKING RATIO"}</small><strong className="notranslate" translate="no">{`${(stakingRatio ?? 0).toFixed(2)}%`}</strong><span>{stakingRatio == null ? "No verified ratio · initial value" : "Current stake / total mined"}</span></div>
+              <div><small>{"REQUIREMENT"}</small><strong className="notranslate" translate="no">{serviceNodes ? jude(serviceNodes.stakingRequirement) : "—"}</strong><span>{"JUDE / node"}</span></div>
+              <div><small>{"TOTAL MINED SUPPLY"}</small><strong className="notranslate" translate="no">{minedSupply == null ? "—" : atomicJude(minedSupply)}</strong><span>{minedSupply == null ? "Awaiting verified supply" : "JUDE"}</span></div>
+              <div><small>{"CURRENT SERVICE NODES"}</small><strong className="notranslate" translate="no">{serviceNodes ? compact(serviceNodes.total) : "—"}</strong></div>
+              <div><small>{"STAKING RATIO"}</small><strong className="notranslate" translate="no">{stakingRatio == null ? "—" : `${stakingRatio.toFixed(2)}%`}</strong><span>{stakingRatio == null ? "Awaiting a verified ratio" : "Current stake / total mined"}</span></div>
             </div>
           </section>
 
           <section className="stats-panel chain-pulse-panel">
-            <header><div><h2>{"Recent Block Activity"}</h2></div><span>{liveNetwork ? `${liveNetwork.targetSeconds} s target` : "Target unavailable"}</span></header>
+            <header><div><h2>{"Recent Block Activity"}</h2></div><span>{liveNetwork?.targetVerified === true ? `${liveNetwork.targetSeconds} s target` : "Target unavailable"}</span></header>
             <div className="pulse-timeline" aria-label={"Recent interactive block activity"}>
               <i className="pulse-track" />
-              {(snapshot?.blocks || []).slice(0, 5).reverse().map((block, index) => <button key={block.height} className="pulse-node" style={{ "--pulse": `${Math.max(18, Math.min(82, 22 + block.txs * 13))}%`, "--left": `${4 + index * 23}%` } as React.CSSProperties} onClick={() => openBlock(block.height)} aria-label={`Open block ${block.height}`}>
+              {(snapshot?.blocks || []).slice(0, 5).reverse().map((block, index) => <button key={block.height} className="pulse-node" style={{ "--pulse": `${Math.max(18, Math.min(82, 22 + block.txs * 13))}%`, "--left": `${4 + index * 23}%` } as CSSProperties} onClick={() => openBlock(block.height)} aria-label={`Open block ${block.height}`}>
                 <i />
-                <span className="pulse-tooltip"><b>{"BLOCK"} {compact(block.height)}</b><em>{`${block.txs} transactions`}</em><em>{bytes(block.size)}</em><em>{`${age(block.timestamp)} ago`}</em><small>{"CLICK TO INSPECT →"}</small></span>
+                <span className="pulse-tooltip"><b>{"BLOCK"} {compact(block.height)}</b><em>{`${block.txs} transactions`}</em><em>{bytes(block.size)}</em><em>{`${age(block.timestamp, displayNow)} ago`}</em><small>{"CLICK TO INSPECT →"}</small></span>
               </button>)}
             </div>
             <div className="pulse-footer"><span>{"OLDER"}</span><b className="notranslate" translate="no">{`LATEST · ${compact(snapshot?.blocks[0]?.height ?? 0)}`}</b></div>
@@ -200,10 +195,10 @@ export function ExplorerView({ particles, serviceNodesOnly, statisticsOnly, open
           <section className="stats-panel protocol-panel">
             <header><div><h2>{"Chain Parameters"}</h2></div></header>
             <dl>
-              <div><dt>{"Hard Fork Version"}</dt><dd className="notranslate" translate="no">{`v${liveNetwork?.hardFork ?? 0}`}</dd></div>
-              <div><dt>{"Protocol Version"}</dt><dd className="notranslate" translate="no">{liveNetwork?.protocol ?? "0"}</dd></div>
-              <div><dt>{"Median Block Size"}</dt><dd className="notranslate" translate="no">{liveNetwork ? bytes(liveNetwork.blockSizeMedian) : "0 B"}</dd></div>
-              <div><dt>{"Block Size Limit"}</dt><dd className="notranslate" translate="no">{liveNetwork ? bytes(liveNetwork.blockSizeLimit) : "0 B"}</dd></div>
+              <div><dt>{"Hard Fork Version"}</dt><dd className="notranslate" translate="no">{liveNetwork ? `v${liveNetwork.hardFork}` : "—"}</dd></div>
+              <div><dt>{"Jude Version"}</dt><dd className="notranslate" translate="no">{JUDE_RELEASE_VERSION}</dd></div>
+              <div><dt>{"Median Block Weight"}</dt><dd className="notranslate" translate="no">{liveNetwork ? bytes(liveNetwork.blockSizeMedian) : "—"}</dd></div>
+              <div><dt>{"Block Weight Limit"}</dt><dd className="notranslate" translate="no">{liveNetwork ? bytes(liveNetwork.blockSizeLimit) : "—"}</dd></div>
             </dl>
           </section>
         </div>
@@ -211,29 +206,38 @@ export function ExplorerView({ particles, serviceNodesOnly, statisticsOnly, open
         <section className="stats-panel lifecycle-panel">
           <header><div><h2>{"Service Node Lifecycle"}</h2></div></header>
           <div className="lifecycle-grid">
-            <article><TxTypeBadge type="unlock" compact iconOnly /><div><small>{"UNLOCKING"}</small><button className="lifecycle-count notranslate" translate="no" onClick={() => setLifecycleView(lifecycleView === "unlocking" ? null : "unlocking")}>{compact(serviceNodes?.exiting ?? 0)}</button><span>{"Nodes scheduled to exit service"}</span><button className="lifecycle-action" onClick={() => setLifecycleView("unlocking")}>View unlocking nodes →</button></div></article>
-            <article><TxTypeBadge type="decommission" compact iconOnly /><div><small>{"DECOMMISSIONED"}</small><button className="lifecycle-count notranslate" translate="no" disabled={!decommissionedServiceNodes} onClick={() => setLifecycleView(lifecycleView === "decommissioned" ? null : "decommissioned")}>{compact(serviceNodes?.decommissioned ?? 0)}</button><span>{"Funded nodes temporarily inactive"}</span>{decommissionedServiceNodes > 0 ? <button className="lifecycle-action" onClick={() => setLifecycleView("decommissioned")}>View decommissioned nodes →</button> : <em className="lifecycle-action empty">No decommissioned nodes</em>}</div></article>
-            <article><TxTypeBadge type="deregistration" compact iconOnly /><div><small>{"DEREGISTRATION RECORDS"}</small><button className="lifecycle-count notranslate" translate="no" onClick={() => { setLifecycleView(lifecycleView === "deregistered" ? null : "deregistered"); setDeregisteredNodePage(0); }}>{compact(deregisteredTotal ?? 0)}</button><span>{`Indexed through block ${compact(deregisteredIndexedThrough ?? 0)}`}</span><button className="lifecycle-action" onClick={() => { setLifecycleView("deregistered"); setDeregisteredNodePage(0); }}>View deregistration records →</button></div></article>
+            <article><TxTypeBadge type="unlock" compact iconOnly /><div><small>{"UNLOCKING"}</small><button className="lifecycle-count notranslate" translate="no" onClick={() => setLifecycleView(lifecycleView === "unlocking" ? null : "unlocking")}>{serviceNodes ? compact(serviceNodes.exiting) : "—"}</button><button className="lifecycle-action" onClick={() => setLifecycleView("unlocking")}>View nodes →</button></div></article>
+            <article><TxTypeBadge type="decommission" compact iconOnly /><div><small>{"DECOMMISSIONED"}</small><button className="lifecycle-count notranslate" translate="no" disabled={!decommissionedServiceNodes} onClick={() => setLifecycleView(lifecycleView === "decommissioned" ? null : "decommissioned")}>{serviceNodes ? compact(serviceNodes.decommissioned) : "—"}</button>{decommissionedServiceNodes > 0 ? <button className="lifecycle-action" onClick={() => setLifecycleView("decommissioned")}>View nodes →</button> : null}</div></article>
+            <article><TxTypeBadge type="deregistration" compact iconOnly /><div><small>{"DEREGISTRATION RECORDS"}</small><button className="lifecycle-count notranslate" translate="no" onClick={() => { setLifecycleView(lifecycleView === "deregistered" ? null : "deregistered"); setDeregisteredNodePage(0); }}>{compact(deregisteredTotal ?? 0)}</button><span>{`Indexed through block ${compact(deregisteredIndexedThrough ?? 0)}`}</span><button className="lifecycle-action" onClick={() => { setLifecycleView("deregistered"); setDeregisteredNodePage(0); }}>View records →</button></div></article>
           </div>
           {lifecycleView && <div className="lifecycle-details">
-            <header><div><h3>{lifecycleView === "unlocking" ? "Nodes pending unlock" : lifecycleView === "decommissioned" ? "Temporarily decommissioned nodes" : "Deregistration records"}</h3></div><div className="lifecycle-header-actions">{lifecycleView === "deregistered" && deregisteredNodes.length > 20 && <PaginationControls page={deregisteredNodePage} lastPage={deregisteredNodeLastPage} pageSize={deregisteredNodePageSize} onPageChange={setDeregisteredNodePage} onPageSizeChange={(size) => { setDeregisteredNodePageSize(size); setDeregisteredNodePage(0); }} />}<button onClick={() => setLifecycleView(null)} aria-label={"Close lifecycle details"}>×</button></div></header>
+            <header><div><h3>{lifecycleView === "unlocking" ? "Nodes pending unlock" : lifecycleView === "decommissioned" ? "Temporarily decommissioned nodes" : "Deregistration records"}</h3></div><div className="lifecycle-header-actions"><button onClick={() => setLifecycleView(null)} aria-label={"Close lifecycle details"}>×</button></div></header>
             <div className={`table-card ${lifecycleView === "unlocking" ? "unlock-detail-table" : lifecycleView === "decommissioned" ? "decommission-detail-table" : "deregistered-table"}`}>
               {lifecycleView === "unlocking" ? <>
-                <div className="table-head"><span>{"NODE PUBLIC KEY"}</span><span>{"STAKE"}</span><span>{"REGISTERED BLOCK"}</span><span>{"LAST REWARD"}</span><span>{"SCHEDULED UNLOCK BLOCK"}</span><span>{"EST. TIME LEFT"}</span></div>
+                <div className="table-head"><span>{"NODE PUBLIC KEY"}</span><span>{"STAKE"}</span><span>{"REGISTERED BLOCK"}</span><span>{"LAST REWARD BLOCK"}</span><span>{"SCHEDULED UNLOCK BLOCK"}</span><span>{"EST. TIME LEFT"}</span></div>
                 {(serviceNodes?.unlockingNodes || []).map((node) => {
-                  const remainingBlocks = Math.max(0, node.unlockAt - serviceNodeHeight);
-                  return <div className="table-row service-node-row-link" key={node.publicKey} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}><span className="node-key detail-link">{hashPreview(node.publicKey)}</span><span>{jude(node.contributed)} JUDE</span><span className="block-height detail-link">{compact(node.registeredAt)}</span><span className="block-height detail-link">{compact(node.lastRewardAt)}</span><span className="block-height">{compact(node.unlockAt)}</span><span className="unlock-eta"><b>{liveNetwork ? estimatedBlockWait(remainingBlocks, liveNetwork.targetSeconds) : "N/A"}</b><small>{`${compact(remainingBlocks)} blocks`}</small></span></div>;
+                  const currentHeight = Math.max(serviceNodeHeight, liveNetwork?.height ?? 0);
+                  const remainingBlocks = Math.max(0, node.unlockAt - currentHeight);
+                  const estimate = serviceNodeUnlockEstimate(node.unlockAt, liveNetwork, currentHeight);
+                  return <div className="table-row service-node-row-link" key={node.publicKey} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}><IdentifierCell className="node-key detail-link" value={node.publicKey} label="Service Node public key" /><span>{jude(node.contributed)} JUDE</span><span className="block-height detail-link">{compact(node.registeredAt)}</span><span className="block-height detail-link">{compact(node.lastRewardAt)}</span><span className="block-height">{compact(node.unlockAt)}</span><span className="unlock-eta"><b>{estimate?.wait ?? "No current estimate"}</b><small>{`${compact(remainingBlocks)} blocks`}</small>{estimate?.date && <small className="unlock-est-date">{estimate.date}</small>}</span></div>;
                 })}
               </> : lifecycleView === "decommissioned" ? <>
-                <div className="table-head"><span>{"NODE PUBLIC KEY"}</span><span>{"CONTRIBUTORS"}</span><span>{"DECOMMISSIONS"}</span><span>{"DOWNTIME CREDIT"}</span></div>
-                {(serviceNodes?.decommissionedNodes || []).map((node) => <div className="table-row service-node-row-link" key={node.publicKey} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}><span className="node-key detail-link">{hashPreview(node.publicKey)}</span><span>{node.contributors}/{node.maxContributors}</span><span>{compact(node.decommissionCount)}</span><span>{compact(node.downtimeCredit)} {"blocks"}</span></div>)}
-                {serviceNodes && serviceNodes.decommissionedNodes.length === 0 && <div className="lifecycle-empty"><b>0</b><span>{"No service nodes are currently decommissioned."}</span><small>{"This panel will populate automatically when the chain reports a temporarily offline funded node."}</small></div>}
+                <div className="table-head"><span>{"NODE PUBLIC KEY"}</span><span>{"CONTRIBUTORS"}</span><span>{"DECOMMISSIONS"}</span><span>{"DOWNTIME CREDIT (BLOCKS)"}</span></div>
+                {(serviceNodes?.decommissionedNodes || []).map((node) => <div className="table-row service-node-row-link" key={node.publicKey} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}><IdentifierCell className="node-key detail-link" value={node.publicKey} label="Service Node public key" /><span>{node.contributors}/{node.maxContributors}</span><span>{compact(node.decommissionCount)}</span><span>{compact(node.downtimeCredit)} {"blocks"}</span></div>)}
+                {serviceNodes && serviceNodes.decommissionedNodes.length === 0 && <div className="lifecycle-empty"><b>0</b><span>{"No service nodes are currently decommissioned."}</span></div>}
               </> : <>
-                <div className="table-head"><span>{"NODE PUBLIC KEY"}</span><span>{"STAKE STATUS"}</span><span>{"REGISTERED BLOCK"}</span><span>{"STAKE UNLOCK HEIGHT"}</span></div>
-                {paginatedDeregisteredNodes.map((node) => <div className="table-row service-node-row-link" key={`${node.publicKey}-${node.unlockedAt}`} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}><span className="node-key detail-link">{hashPreview(node.publicKey)}</span><span>{serviceNodeHeight > 0 ? serviceNodeHeight >= node.unlockedAt ? "RELEASED" : "LOCKED" : "N/A"}</span><span className="block-height detail-link">{compact(node.registeredAt)}</span><span className="block-height detail-link">{compact(node.unlockedAt)}</span></div>)}
+                <div className="table-head"><span>{"NODE PUBLIC KEY"}</span><span>{"STAKE STATUS"}</span><span>{"REGISTERED BLOCK"}</span><span>{"STAKE UNLOCK HEIGHT"}</span><span>{"EST. TIME LEFT"}</span><span>{"EST. UNLOCK (UTC)"}</span></div>
+                {paginatedDeregisteredNodes.map((node) => {
+                  const currentHeight = Math.max(serviceNodeHeight, liveNetwork?.height ?? 0);
+                  const reached = currentHeight > 0 && currentHeight >= node.unlockedAt;
+                  const verifiedSchedule = node.unlockHeightVerified === true;
+                  const estimate = verifiedSchedule ? serviceNodeUnlockEstimate(node.unlockedAt, liveNetwork, currentHeight) : null;
+                  return <div className="table-row service-node-row-link" key={`${node.publicKey}-${node.unlockedAt}`} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}><IdentifierCell className="node-key detail-link" value={node.publicKey} label="Service Node public key" /><span>{reached ? "UNLOCK HEIGHT REACHED" : verifiedSchedule ? "LOCKED" : "HISTORICAL SCHEDULE"}</span><span className="block-height detail-link">{compact(node.registeredAt)}</span><span className="block-height detail-link">{compact(node.unlockedAt)}</span><span className="unlock-eta"><b>{reached ? "Unlock height reached" : estimate?.wait ?? "No current estimate"}</b>{estimate && <small>{`${compact(estimate.remainingBlocks)} blocks`}</small>}</span><span className="unlock-date">{estimate?.date ?? (reached ? "Height reached" : "No current estimate")}</span></div>;
+                })}
               </>}
             </div>
-            {lifecycleView === "unlocking" && liveNetwork && <p className="unlock-estimate-note">Estimated time is calculated using the current chain height and the {liveNetwork.targetSeconds}-second target block time. Actual unlock timing may vary as blocks are produced.</p>}
+            {lifecycleView === "deregistered" && deregisteredNodes.length > 20 && <div className="table-pagination"><PaginationControls page={deregisteredNodePage} lastPage={deregisteredNodeLastPage} pageSize={deregisteredNodePageSize} onPageChange={setDeregisteredNodePage} onPageSizeChange={(size) => { setDeregisteredNodePageSize(size); setDeregisteredNodePage(0); }} /></div>}
+            {(lifecycleView === "unlocking" || lifecycleView === "deregistered") && liveNetwork?.targetVerified && <p className="unlock-estimate-note">Estimates use verified unlock heights and the {liveNetwork.targetSeconds}-second target block time reported by the chain. Actual timing varies with block production. Historical schedules without a current verified lock have no expiry estimate.</p>}
           </div>}
         </section>
       </section>}
@@ -243,25 +247,27 @@ export function ExplorerView({ particles, serviceNodesOnly, statisticsOnly, open
           <div><h2>{"Service Node Overview"}</h2></div>
         </div>
         <form className="service-node-search" role="search" onSubmit={(event) => event.preventDefault()}>
-          <span className="service-node-search-icon" aria-hidden="true">⌕</span>
+          <span className="service-node-search-icon"><UiIcon name="search" size={20} /></span>
           <input
+            type="search"
             aria-label="Search Service Nodes by public key"
             placeholder="Search by node public key"
             value={serviceNodeQuery}
             onChange={(event) => { setServiceNodeQuery(event.target.value); setServiceNodePage(0); }}
             autoComplete="off"
             spellCheck={false}
+            autoCapitalize="none"
           />
           {serviceNodeQuery && <button type="button" onClick={() => { setServiceNodeQuery(""); setServiceNodePage(0); }} aria-label="Clear Service Node search">Clear</button>}
-          <span className="service-node-search-count notranslate" translate="no">{serviceNodeQuery.trim() ? `RESULTS: ${compact(filteredServiceNodes.length)}` : `TOTAL NODES: ${compact(serviceNodes?.total ?? 0)}`}</span>
+          <span className="service-node-search-count notranslate" translate="no">{serviceNodeQuery.trim() ? `RESULTS: ${compact(filteredServiceNodes.length)}` : `TOTAL NODES: ${serviceNodes ? compact(serviceNodes.total) : "—"}`}</span>
         </form>
         <div className="staking-stats">
-          <article><small>{"TOTAL SERVICE NODES"}</small><strong className="notranslate" translate="no">{compact(serviceNodes?.total ?? 0)}</strong><span>{"Registered on mainnet"}</span></article>
-          <article><small>{"ACTIVE NODES"}</small><strong className="notranslate" translate="no">{compact(serviceNodes?.active ?? 0)}</strong><span className="trend">{"Currently active on mainnet"}</span></article>
-          <article><small>{"STAKING REQUIREMENT"}</small><strong className="notranslate" translate="no">{jude(serviceNodes?.stakingRequirement ?? 0)} <i>JUDE</i></strong><span>{"Required for a fully funded node"}</span></article>
-          <article><small>{"TOTAL STAKED"}</small><strong className="notranslate" translate="no">{jude(serviceNodes?.totalContributed ?? 0)} <i>JUDE</i></strong><span className="trend">{"Total contributed to Service Nodes"}</span></article>
-          <article className="unlocking-stat"><small>{"UNLOCKING NODES"}</small><strong className="notranslate" translate="no">{compact(serviceNodes?.exiting ?? 0)}</strong><span>{"Scheduled to exit service"}</span></article>
-          <article><small>{"DECOMMISSIONED NODES"}</small><strong className="notranslate" translate="no">{compact(serviceNodes?.decommissioned ?? 0)}</strong><span>{"Temporarily inactive"}</span></article>
+          <article><small>{"TOTAL SERVICE NODES"}</small><strong className="notranslate" translate="no">{serviceNodes ? compact(serviceNodes.total) : "—"}</strong></article>
+          <article><small>{"ACTIVE NODES"}</small><strong className="notranslate" translate="no">{serviceNodes ? compact(serviceNodes.active) : "—"}</strong></article>
+          <article><small>{"STAKING REQUIREMENT"}</small><strong className="notranslate" translate="no">{serviceNodes ? jude(serviceNodes.stakingRequirement) : "—"} <i>JUDE</i></strong></article>
+          <article><small>{"TOTAL STAKED"}</small><strong className="notranslate" translate="no">{serviceNodes ? jude(serviceNodes.totalContributed) : "—"} <i>JUDE</i></strong></article>
+          <article className="unlocking-stat"><small>{"UNLOCKING NODES"}</small><strong className="notranslate" translate="no">{serviceNodes ? compact(serviceNodes.exiting) : "—"}</strong></article>
+          <article><small>{"DECOMMISSIONED NODES"}</small><strong className="notranslate" translate="no">{serviceNodes ? compact(serviceNodes.decommissioned) : "—"}</strong></article>
         </div>
         {awaitingServiceNodeRows.length > 0 && <AwaitingContributionsPanel nodes={awaitingServiceNodeRows} onOpen={openServiceNode} />}
         {Boolean(serviceNodes?.decommissionedNodes.length) && (
@@ -269,20 +275,20 @@ export function ExplorerView({ particles, serviceNodesOnly, statisticsOnly, open
             <div className="decommissioned-live-heading">
               <div>
                 <h3>{"Temporarily Decommissioned"}</h3>
-                <p>{"Currently out of service and not earning rewards. This panel disappears automatically when every node returns to service."}</p>
+                <p>{"Funded nodes currently marked as decommissioned by the chain."}</p>
               </div>
               <strong className="notranslate" translate="no">{serviceNodes!.decommissionedNodes.length} {"DECOMMISSIONED"}</strong>
             </div>
             <div className="decommissioned-live-table">
-              <div className="table-head"><span>{"STATUS"}</span><span>{"NODE PUBLIC KEY"}</span><span>{"CONTRIBUTORS"}</span><span>{"OPERATOR FEE (%)"}</span><span>{"DECOMMISSIONS"}</span><span>{"LAST UPTIME AGE [h:m:s]"}</span><span>{"DOWNTIME CREDIT"}</span></div>
+              <div className="table-head"><span>{"STATUS"}</span><span>{"NODE PUBLIC KEY"}</span><span>{"CONTRIBUTORS"}</span><span>{"OPERATOR FEE (%)"}</span><span>{"DECOMMISSIONS"}</span><span>{"LAST UPTIME AGE [h:m:s]"}</span><span>{"DOWNTIME CREDIT (BLOCKS)"}</span></div>
               {serviceNodes!.decommissionedNodes.map((node) => (
                 <div className="table-row service-node-row-link notranslate" translate="no" key={node.publicKey} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}>
                   <TxTypeBadge type="decommission" compact iconOnly />
-                  <span className="node-key detail-link">{hashPreview(node.publicKey)}</span>
+                  <IdentifierCell className="node-key detail-link" value={node.publicKey} label="Service Node public key" />
                   <span>{node.contributors}/{node.maxContributors}</span>
                   <span>{node.operatorFee == null ? "NOT REPORTED" : node.operatorFee}</span>
                   <span>{compact(node.decommissionCount)}</span>
-                  <span>{node.lastUptimeProof ? age(node.lastUptimeProof) : "0"}</span>
+                  <span>{node.lastUptimeProof ? age(node.lastUptimeProof, displayNow) : "Not reported"}</span>
                   <span>{compact(node.downtimeCredit)} {"blocks"}</span>
                 </div>
               ))}
@@ -290,13 +296,13 @@ export function ExplorerView({ particles, serviceNodesOnly, statisticsOnly, open
           </section>
         )}
         <div className="table-card nodes-table">
-          <div className="table-head"><span>{"STATUS"}</span><span>{"NODE PUBLIC KEY"}</span><span>{"CONTRIBUTORS"}</span><span>{"OPERATOR FEE (%)"}</span><span>{"STAKE (JUDE)"}</span><span>{"REGISTRATION HEIGHT"}</span><span title="Sorted by latest reward block height">{"LAST REWARD BLOCK ↓"}</span><span>{"VERSION"}</span></div>
+          <div className="table-head"><span>{"STATUS"}</span><span>{"NODE PUBLIC KEY"}</span><span>{"CONTRIBUTORS"}</span><span>{"OPERATOR FEE (%)"}</span><span>{"STAKE (JUDE)"}</span><span>{"REGISTRATION HEIGHT"}</span><span title="Sorted by latest reward block height">{"LAST REWARD BLOCK ↓"}</span><span>{"NODE VERSION"}</span></div>
           {paginatedServiceNodes.map((node) => (
             <div className="table-row service-node-row-link notranslate" translate="no" key={node.publicKey} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}>
               {node.unlocking
                 ? <span className="node-unlocking"><TxTypeBadge type="unlock" compact iconOnly /></span>
                 : <span className={node.active ? "node-active" : "node-inactive"}>{node.active ? "● ACTIVE" : node.funded ? "○ DECOMMISSIONED" : "○ AWAITING CONTRIBUTIONS"}</span>}
-              <span className="node-key detail-link">{hashPreview(node.publicKey)}</span>
+              <IdentifierCell className="node-key detail-link" value={node.publicKey} label="Service Node public key" />
               <span>{node.contributors}/{node.maxContributors}</span>
               <span>{node.operatorFee == null ? "NOT REPORTED" : node.operatorFee}</span>
               <span>{jude(node.contributed)}</span>
@@ -305,10 +311,10 @@ export function ExplorerView({ particles, serviceNodesOnly, statisticsOnly, open
               <span>{node.version}</span>
             </div>
           ))}
-          {!serviceNodes && <div className="nodes-loading notranslate" translate="no">{"0 SERVICE NODES"}</div>}
+          {!serviceNodes && <div className="nodes-loading notranslate" translate="no">{"Awaiting service node data"}</div>}
           {serviceNodes && filteredServiceNodes.length === 0 && <div className="nodes-loading">No Service Node public key matches this search.</div>}
         </div>
-        <div className="service-node-bottom-pager">
+        <div className="table-pagination">
           <PaginationControls
             page={serviceNodePage}
             lastPage={serviceNodeLastPage}
@@ -319,25 +325,75 @@ export function ExplorerView({ particles, serviceNodesOnly, statisticsOnly, open
         </div>
       </section>}
 
-      {!serviceNodesOnly && !statisticsOnly && <>
+      {homeOnly && <>
+      <section className="staking home-service-nodes shell" id="home-service-nodes">
+        <div className="section-heading">
+          <div><h2>{"Latest Service Nodes"}</h2></div>
+          <a className="section-link" href="/service-nodes">{"VIEW ALL SERVICE NODES →"}</a>
+        </div>
+        {awaitingServiceNodeRows.length > 0 && <AwaitingContributionsPanel nodes={awaitingServiceNodeRows} onOpen={openServiceNode} home />}
+        {Boolean(serviceNodes?.decommissionedNodes.length) && (
+          <section className="decommissioned-live home-decommissioned" aria-label="Temporarily decommissioned service nodes">
+            <div className="decommissioned-live-heading">
+              <div>
+                <h3>{"Temporarily Decommissioned"}</h3>
+                <p>{"Funded nodes currently marked as decommissioned by the chain."}</p>
+              </div>
+              <strong className="notranslate" translate="no">{serviceNodes!.decommissionedNodes.length} {"DECOMMISSIONED"}</strong>
+            </div>
+            <div className="decommissioned-live-table">
+              <div className="table-head"><span>{"STATUS"}</span><span>{"NODE PUBLIC KEY"}</span><span>{"CONTRIBUTORS"}</span><span>{"OPERATOR FEE (%)"}</span><span>{"DECOMMISSIONS"}</span><span>{"LAST UPTIME AGE [h:m:s]"}</span><span>{"DOWNTIME CREDIT (BLOCKS)"}</span></div>
+              {serviceNodes!.decommissionedNodes.map((node) => (
+                <div className="table-row service-node-row-link notranslate" translate="no" key={node.publicKey} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}>
+                  <TxTypeBadge type="decommission" compact iconOnly />
+                  <IdentifierCell className="node-key detail-link" value={node.publicKey} label="Service Node public key" />
+                  <span>{node.contributors}/{node.maxContributors}</span>
+                  <span>{node.operatorFee == null ? "NOT REPORTED" : node.operatorFee}</span>
+                  <span>{compact(node.decommissionCount)}</span>
+                  <span>{node.lastUptimeProof ? age(node.lastUptimeProof, displayNow) : "Not reported"}</span>
+                  <span>{compact(node.downtimeCredit)} {"blocks"}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+        <div className="table-card nodes-table">
+          <div className="table-head"><span>{"STATUS"}</span><span>{"NODE PUBLIC KEY"}</span><span>{"CONTRIBUTORS"}</span><span>{"OPERATOR FEE (%)"}</span><span>{"STAKE (JUDE)"}</span><span>{"REGISTRATION HEIGHT"}</span><span title="Sorted by latest reward block height">{"LAST REWARD BLOCK ↓"}</span><span>{"NODE VERSION"}</span></div>
+          {homepageServiceNodes.map((node) => (
+            <div className="table-row service-node-row-link notranslate" translate="no" key={node.publicKey} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}>
+              {node.unlocking
+                ? <span className="node-unlocking"><TxTypeBadge type="unlock" compact iconOnly /></span>
+                : <span className={node.active ? "node-active" : "node-inactive"}>{node.active ? "● ACTIVE" : node.funded ? "○ DECOMMISSIONED" : "○ AWAITING CONTRIBUTIONS"}</span>}
+              <IdentifierCell className="node-key detail-link" value={node.publicKey} label="Service Node public key" />
+              <span>{node.contributors}/{node.maxContributors}</span>
+              <span>{node.operatorFee == null ? "NOT REPORTED" : node.operatorFee}</span>
+              <span>{jude(node.contributed)}</span>
+              <span className="block-height detail-link">{compact(node.registeredAt)}</span>
+              <span className="block-height detail-link">{compact(node.lastRewardAt)}</span>
+              <span>{node.version}</span>
+            </div>
+          ))}
+          {!serviceNodes && <div className="nodes-loading notranslate" translate="no">{"Awaiting service node data"}</div>}
+        </div>
+        <div className="table-pagination">
+          <PaginationControls page={homepageServiceNodePage} lastPage={homepageServiceNodeLastPage} pageSize={homepageServiceNodePageSize} loading={!serviceNodes} onPageChange={setHomepageServiceNodePage} onPageSizeChange={(size) => { setHomepageServiceNodePageSize(size); setHomepageServiceNodePage(0); }} />
+        </div>
+      </section>
+
       <section className="quorum-section shell" id="quorums">
         <div className="section-heading quorum-heading">
           <div><h2>{"Service Node Testing Quorums"}</h2></div>
         </div>
-        <div className="quorum-console">
-          <div className="quorum-radar" aria-hidden="true">
-            <i className="quorum-sweep" />
-            <i className="quorum-ring ring-a" /><i className="quorum-ring ring-b" /><i className="quorum-ring ring-c" />
-            {(latestQuorum?.validators || []).slice(0, 10).map((key, index) => <i className="radar-node" key={key} style={{ "--n": index } as React.CSSProperties} />)}
-            <div className="radar-core"><strong className="notranslate" translate="no">{latestQuorum?.validators.length ?? 0}</strong><span>{"VALIDATORS"}</span></div>
-          </div>
+        <div className={`quorum-console quorum-summary-console${latestQuorum ? " has-sample" : " awaiting-sample"}`}>
           <div className="quorum-overview">
-            <h3>{"Public testing quorums, clearly mapped."}</h3>
-            <p>{"Each sampled height shows its Service Node testing quorum: validators and the nodes assigned for testing. Checkpoint, Blink, and Pulse quorums are not represented in this panel."}</p>
+            <div className="quorum-summary-copy">
+              
+              <p>{"Validators and nodes assigned for testing at each sampled height. Checkpoint, Blink, and Pulse quorums are not shown."}</p>
+            </div>
             <div className="quorum-metrics">
-              <article><small>{"LATEST SAMPLE"}</small><strong className="block-height notranslate" translate="no">{latestQuorum ? compact(latestQuorum.height) : "0"}</strong></article>
-              <article><small>{"VALIDATORS"}</small><strong className="notranslate" translate="no">{latestQuorum?.validators.length ?? 0}</strong></article>
-              <article><small>{"NODES UNDER TEST"}</small><strong className="notranslate" translate="no">{latestQuorum?.workers.length ?? 0}</strong></article>
+              <article><small>{"SAMPLE BLOCK"}</small><strong className="block-height notranslate" translate="no">{latestQuorum ? compact(latestQuorum.height) : "—"}</strong></article>
+              <article><small>{"VALIDATORS"}</small><strong className="notranslate" translate="no">{latestQuorum ? latestQuorum.validators.length : "—"}</strong></article>
+              <article><small>{"NODES UNDER TEST"}</small><strong className="notranslate" translate="no">{latestQuorum ? latestQuorum.workers.length : "—"}</strong></article>
             </div>
           </div>
         </div>
@@ -356,63 +412,12 @@ export function ExplorerView({ particles, serviceNodesOnly, statisticsOnly, open
               </div>
             </details>
           ))}
-          {!quorums?.records.length && <div className="nodes-loading notranslate" translate="no">{"0 QUORUM RECORDS"}</div>}
+          {!quorums?.records.length && <div className="nodes-loading notranslate" translate="no">{quorums ? "0 QUORUM RECORDS" : "Awaiting quorum records"}</div>}
         </div>
-        <div className="quorum-bottom-pager">
+        <div className="table-pagination">
           <PaginationControls page={quorumPage} lastPage={liveNetwork ? Math.min(10000, Math.floor(liveNetwork.height / quorumPageSize)) : 0} pageSize={quorumPageSize} loading={quorumLoading} onPageChange={(page) => void changeQuorumPage(page)} onPageSizeChange={changeQuorumPageSize} onPrefetchPage={(page) => prefetchSnapshot({ quorumPage: page })} disableNext={Boolean(quorums && !quorums.hasOlder)} />
         </div>
         {quorums?.truncated && <div className="nodes-loading">{"Older quorum history exists. Select a larger page size to reach earlier heights."}</div>}
-      </section>
-
-      <section className="staking home-service-nodes shell" id="home-service-nodes">
-        <div className="section-heading">
-          <div><h2>{"Latest Service Nodes"}</h2></div>
-          <a className="section-link" href="/service-nodes">{"VIEW ALL SERVICE NODES →"}</a>
-        </div>
-        {awaitingServiceNodeRows.length > 0 && <AwaitingContributionsPanel nodes={awaitingServiceNodeRows} onOpen={openServiceNode} home />}
-        {Boolean(serviceNodes?.decommissionedNodes.length) && (
-          <section className="decommissioned-live home-decommissioned" aria-label="Temporarily decommissioned service nodes">
-            <div className="decommissioned-live-heading">
-              <div>
-                <h3>{"Temporarily Decommissioned"}</h3>
-                <p>{"Currently offline, out of service, and not earning rewards. This panel is hidden automatically when all nodes return to service."}</p>
-              </div>
-              <strong className="notranslate" translate="no">{serviceNodes!.decommissionedNodes.length} {"DECOMMISSIONED"}</strong>
-            </div>
-            <div className="decommissioned-live-table">
-              <div className="table-head"><span>{"STATUS"}</span><span>{"NODE PUBLIC KEY"}</span><span>{"CONTRIBUTORS"}</span><span>{"OPERATOR FEE (%)"}</span><span>{"DECOMMISSIONS"}</span><span>{"LAST UPTIME AGE [h:m:s]"}</span><span>{"DOWNTIME CREDIT"}</span></div>
-              {serviceNodes!.decommissionedNodes.map((node) => (
-                <div className="table-row service-node-row-link notranslate" translate="no" key={node.publicKey} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}>
-                  <TxTypeBadge type="decommission" compact iconOnly />
-                  <span className="node-key detail-link">{hashPreview(node.publicKey)}</span>
-                  <span>{node.contributors}/{node.maxContributors}</span>
-                  <span>{node.operatorFee == null ? "NOT REPORTED" : node.operatorFee}</span>
-                  <span>{compact(node.decommissionCount)}</span>
-                  <span>{node.lastUptimeProof ? age(node.lastUptimeProof) : "0"}</span>
-                  <span>{compact(node.downtimeCredit)} {"blocks"}</span>
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
-        <div className="table-card nodes-table">
-          <div className="table-head"><span>{"STATUS"}</span><span>{"NODE PUBLIC KEY"}</span><span>{"CONTRIBUTORS"}</span><span>{"OPERATOR FEE (%)"}</span><span>{"STAKE (JUDE)"}</span><span>{"REGISTRATION HEIGHT"}</span><span title="Sorted by latest reward block height">{"LAST REWARD BLOCK ↓"}</span><span>{"VERSION"}</span></div>
-          {homepageServiceNodes.map((node) => (
-            <div className="table-row service-node-row-link notranslate" translate="no" key={node.publicKey} role="button" tabIndex={0} aria-label={`Open Service Node ${node.publicKey}`} onClick={() => openServiceNode(node.publicKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openServiceNode(node.publicKey); } }}>
-              {node.unlocking
-                ? <span className="node-unlocking"><TxTypeBadge type="unlock" compact iconOnly /></span>
-                : <span className={node.active ? "node-active" : "node-inactive"}>{node.active ? "● ACTIVE" : node.funded ? "○ DECOMMISSIONED" : "○ PENDING"}</span>}
-              <span className="node-key detail-link">{hashPreview(node.publicKey)}</span>
-              <span>{node.contributors}/{node.maxContributors}</span>
-              <span>{node.operatorFee == null ? "NOT REPORTED" : node.operatorFee}</span>
-              <span>{jude(node.contributed)}</span>
-              <span className="block-height detail-link">{compact(node.registeredAt)}</span>
-              <span className="block-height detail-link">{compact(node.lastRewardAt)}</span>
-              <span>{node.version}</span>
-            </div>
-          ))}
-          {!serviceNodes && <div className="nodes-loading notranslate" translate="no">{"0 SERVICE NODES"}</div>}
-        </div>
       </section>
 
       <section className="privacy-panel shell">
@@ -432,16 +437,20 @@ export function ExplorerView({ particles, serviceNodesOnly, statisticsOnly, open
             </div>
           </div>
         </div>
-        <div><h2>{"Transparency where it matters."}<br />{"Privacy where it counts."}</h2><p>{"Public consensus data remains inspectable, while private transfer participants, addresses, and amounts remain hidden. Service Node registration fields appear only when they are part of the protocol’s public state."}</p></div>
+        <div><h2>{"Built for privacy."}<br />{"Open to verification."}</h2></div>
         <div className="privacy-grid">
-          <article><b>◉</b><span><strong>{"Private addresses"}</strong><small>{"Private transfer participants are not indexed."}</small></span></article>
-          <article><b>◌</b><span><strong>{"Amounts stay private"}</strong><small>{"Transfer values remain confidential."}</small></span></article>
-          <article><b>◇</b><span><strong>{"Public consensus proof"}</strong><small>{"Blocks, transaction hashes, and public Service Node consensus data remain verifiable."}</small></span></article>
+          <article><b aria-hidden="true">◉</b><span><strong>{"Private payments"}</strong><small>{"Explore transfers without exposing the participants."}</small></span></article>
+          <article><b aria-hidden="true">◌</b><span><strong>{"Confidential amounts"}</strong><small>{"Follow activity without revealing transfer values."}</small></span></article>
+          <article><b aria-hidden="true">◇</b><span><strong>{"Verifiable consensus"}</strong><small>{"Explore blocks and the nodes securing Judecoin."}</small></span></article>
         </div>
       </section>
 
-      <footer className="shell"><div className="brand"><span className="brand-mark"><img src="/judecoin-logo-minimal-ring-transparent.png" alt="" /></span><span><b>JUDECOIN</b></span></div><div className="footer-meta"><a href="https://github.com/judecoin" target="_blank" rel="noreferrer">{"Source Code"}</a><span>{"Judecoin Core"}: 3.2.0-release</span></div></footer>
+
       </>}
+
+      <footer className="shell explorer-footer"><a className="brand" href="https://judeblock.io/" aria-label="Judecoin Blockchain Explorer home" onClick={closeDetail}><span className="brand-mark"><img src="/judecoin-logo-minimal-ring-transparent.png" alt="" /></span><span><b>{"Judecoin"}</b>{" "}<small>{"Blockchain Explorer"}</small></span></a><div className="footer-meta"><a className="footer-github" href="https://github.com/judecoin" target="_blank" rel="noreferrer" aria-label="Judecoin on GitHub" title="Judecoin on GitHub"><svg viewBox="0 0 24 24" width="21" height="21" fill="currentColor" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg></a><span className="footer-version"><span>{"Jude Version:"}</span>{" "}<b>{JUDE_RELEASE_VERSION}</b></span></div></footer>
+
+      </div>
 
       {detailPending && <div className="detail-request-status" aria-live="polite" aria-atomic="true">
         <div className="detail-request-card">
@@ -451,13 +460,13 @@ export function ExplorerView({ particles, serviceNodesOnly, statisticsOnly, open
         </div>
       </div>}
       {detail && <div ref={detailBackdropRef} className={detail.fullPage ? "detail-backdrop detail-page-backdrop" : "detail-backdrop"} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeDetail(); }}>
-        <div key={detailRenderKey} className={detail.fullPage ? `detail-modal detail-page detail-resolved${detail.kind ? ` ${detail.kind}-detail-page` : ""}` : "detail-modal detail-resolved"} role="dialog" aria-modal="true" aria-labelledby="detail-title">
+        <div key={detailRenderKey} className={detail.fullPage ? `detail-modal detail-page detail-resolved${detail.kind ? ` ${detail.kind}-detail-page` : ""}` : "detail-modal detail-resolved"} role="dialog" aria-modal={detail.fullPage ? undefined : true} aria-labelledby="detail-title">
           <header><div>{detail.fullPage && <button className="detail-back-button" aria-label={"Back"} onClick={closeDetail}>← {"Back"}</button>}<h2 id="detail-title">{detail.title}</h2></div>{!detail.fullPage && <button aria-label={"Close details"} onClick={closeDetail}>×</button>}</header>
           {detail.sections ? <div className="detail-sections">{detail.sections.map((section) => <section className="detail-section" key={section.title}><div className="detail-subheading"><h3>{section.title}</h3></div><dl>{section.rows.map((row) => <div key={row.label}><dt>{row.label}</dt><dd className={isBlockHeightLabel(row.label) ? "block-height" : undefined}><DetailValue value={row.value} /></dd></div>)}</dl></section>)}</div> : <div className="detail-grid">{detail.rows.map((row) => <div key={row.label}><small>{row.label}</small><DetailValue value={row.value} /></div>)}</div>}
-          {detail.outputs && <section className="detail-outputs"><div className="detail-subheading"><h3>{detail.outputTitle || "Transaction Outputs"}</h3></div><div className="detail-output-table"><div className="detail-output-head"><span>#</span><span>{"OUTPUT KEY"}</span><span>{"AMOUNT"}</span><span>{"UNLOCK HEIGHT"}</span></div>{detail.outputs.map((output) => <div className="detail-output-row" key={`${output.index}-${output.key}`}><span>{output.index}</span><code>{output.key}</code><strong className={output.confidential ? "private-amount" : undefined}>{output.confidential ? "? JUDE" : `${atomicJude(output.amount || 0)} JUDE`}</strong><span className="block-height">{compact(output.unlockHeight)}</span></div>)}</div></section>}
-          {detail.inputs && <section className="detail-inputs"><div className="detail-subheading"><h3>{"Inputs"}</h3><p>{`${detail.inputs.length} input(s) · amounts remain private`}</p></div><div className="detail-input-list">{detail.inputs.map((input) => <article key={`${input.index}-${input.keyImage}`}><header><span>{`INPUT ${input.index}`}</span><TxTypeBadge type={input.type === "coinbase" ? "block-reward" : "transfer"} compact iconOnly /></header><dl className="input-summary"><div><dt>{"KEY IMAGE"}</dt><dd><code>{input.keyImage || "Not applicable"}</code></dd></div><div><dt>{"AMOUNT"}</dt><dd className={input.amount ? undefined : "private-amount"}>{input.amount ? `${atomicJude(input.amount)} JUDE` : "? JUDE"}</dd></div><div><dt>{"RING SIZE"}</dt><dd>{input.ringSize || "N/A"}</dd></div></dl>{input.ringSize > 0 && <div className="ring-members"><div className="ring-head"><span>#</span><span>{"RING MEMBER / OUTPUT KEY"}</span><span>{"SOURCE TRANSACTION"}</span><span>{"BLOCK"}</span></div>{(input.ringMembers?.length ? input.ringMembers : (input.keyOffsets || []).map((offset) => ({ index: offset, outputKey: "", transactionHash: "", blockHeight: 0, unlocked: false }))).map((member, memberIndex) => <div className="ring-row" key={`${input.index}-${member.index}-${memberIndex}`}><span>{memberIndex}</span><code>{member.outputKey || `Output index ${compact(member.index)}`}</code><span>{member.transactionHash ? <button className="detail-link link" onClick={() => openTransaction(member.transactionHash)}>{hashPreview(member.transactionHash)}</button> : "Unavailable from node"}</span><span>{member.blockHeight ? <button className="detail-link block-height" onClick={() => openBlock(member.blockHeight)}>{compact(member.blockHeight)}</button> : "N/A"}</span></div>)}</div>}</article>)}</div></section>}
+          {detail.outputs && detail.outputs.length > 0 && <section className="detail-outputs"><div className="detail-subheading"><h3>{detail.outputTitle || "Transaction Outputs"}</h3></div><div className={`detail-output-table${hasOutputUnlock ? "" : " no-output-unlock"}`}><div className="detail-output-head"><span>#</span><span>{"OUTPUT KEY"}</span><span>{"AMOUNT"}</span>{hasOutputUnlock && <span>{"UNLOCK TIME / HEIGHT"}</span>}</div>{detail.outputs.map((output) => <div className="detail-output-row" key={`${output.index}-${output.key}`}><span>{output.index}</span><code>{output.key}</code><strong className={output.confidential ? "private-amount" : undefined}>{output.confidential ? "Confidential" : output.amount == null ? "Not reported" : `${atomicJude(output.amount)} JUDE`}</strong>{hasOutputUnlock && <span className="block-height">{output.unlockHeight > 0 ? compact(output.unlockHeight) : "—"}</span>}</div>)}</div></section>}
+          {detail.inputs && detail.inputs.length > 0 && <section className="detail-inputs"><div className="detail-subheading"><h3>{`Inputs (${detail.inputs.length})`}</h3></div><div className="detail-input-list">{detail.inputs.map((input) => <article key={`${input.index}-${input.keyImage}`}><header><span>{`INPUT ${input.index}`}</span><TxTypeBadge type={input.type === "coinbase" ? "block-reward" : "transfer"} compact iconOnly /></header><dl className="input-summary">{input.keyImage && <div><dt>{"KEY IMAGE"}</dt><dd><code>{input.keyImage}</code></dd></div>}{input.type !== "coinbase" && <div><dt>{"AMOUNT"}</dt><dd className={input.amount ? undefined : "private-amount"}>{input.amount ? `${atomicJude(input.amount)} JUDE` : "Confidential"}</dd></div>}{input.ringSize > 0 && <div><dt>{"RING SIZE"}</dt><dd>{input.ringSize}</dd></div>}</dl>{input.ringSize > 0 && <div className="ring-members"><div className="ring-head"><span>#</span><span>{"RING MEMBER / OUTPUT KEY"}</span><span>{"SOURCE TX HASH"}</span><span>{"BLOCK HEIGHT"}</span></div>{(input.ringMembers?.length ? input.ringMembers : (input.keyOffsets || []).map((offset) => ({ index: offset, outputKey: "", transactionHash: "", blockHeight: 0, unlocked: false }))).map((member, memberIndex) => <div className="ring-row" key={`${input.index}-${member.index}-${memberIndex}`}><span>{memberIndex}</span><code>{member.outputKey || `Output index ${compact(member.index)}`}</code><span>{member.transactionHash ? <button className="detail-link link" onClick={() => openTransaction(member.transactionHash)}>{hashPreview(member.transactionHash)}</button> : "Unavailable from node"}</span><span>{member.blockHeight ? <button className="detail-link block-height" onClick={() => openBlock(member.blockHeight)}>{compact(member.blockHeight)}</button> : "N/A"}</span></div>)}</div>}</article>)}</div></section>}
           {detail.raw && <details className="raw-details"><summary>{detail.kind === "service-node" ? "Show Raw Service Node Data" : detail.kind === "block" ? "Show Raw Block Data" : "Show Raw Transaction Data"}</summary><pre>{detail.raw}</pre></details>}
-          <p>{detail.note || "Privacy fields are intentionally excluded. No private address, participant, balance, or amount is requested from the node."}</p>
+          <p>{detail.note || "Only public chain data is displayed."}</p>
         </div>
       </div>}
     </main>

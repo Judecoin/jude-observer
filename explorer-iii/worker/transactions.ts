@@ -3,23 +3,22 @@ import type { DecodedTransaction, RpcExtra, RpcTransaction } from "./rpc-types";
 type ExplorerTxType = "block-reward" | "transfer" | "registration" | "contribution" | "recommission" | "decommission" | "deregistration" | "ip-change" | "unlock" | "state-change";
 
 export function classifyTransaction(parsed: DecodedTransaction | null | undefined, rpcExtra: RpcExtra | null = {}): ExplorerTxType {
-  const type = Number(parsed?.type || 0);
+  const type = Number(parsed?.type ?? 0);
 
-  const extra = rpcExtra?.extra && typeof rpcExtra.extra === "object" ? rpcExtra.extra : rpcExtra;
-  const state = String(extra?.sn_state_change?.type || "").toLowerCase();
+  const extra = rpcExtra?.extra && typeof rpcExtra.extra === "object" && !Array.isArray(rpcExtra.extra) ? rpcExtra.extra : rpcExtra;
+  const state = String(extra?.sn_state_change?.type ?? "").trim().toLowerCase();
   if (state === "dereg" || state === "deregister" || state === "deregistration") return "deregistration";
-  if (state === "decom" || state === "decomm" || state === "decommission") return "decommission";
-  if (state === "recom" || state === "recomm" || state === "recommission") return "recommission";
-  if (state === "ip" || state === "ip-change" || state === "ip_change") return "ip-change";
+  if (state === "decom" || state === "decomm" || state === "decommission" || state === "decommissioned") return "decommission";
+  if (state === "recom" || state === "recomm" || state === "recommission" || state === "recommissioned") return "recommission";
+  if (state === "ip" || state === "ip-change" || state === "ip_change" || state === "ip_change_penalty") return "ip-change";
 
   if (extra?.sn_registration) return "registration";
   if (extra?.sn_contributor) return "contribution";
   if (type === 2 || extra?.key_image_unlock) return "unlock";
   if (Array.isArray(parsed?.vin) && parsed.vin.some((input) => input?.gen)) return "block-reward";
+  // A newer/unknown state stays explicit rather than becoming an ordinary transfer.
+  if (extra?.sn_state_change) return "state-change";
   if (type === 0) return "transfer";
-  if (type === 1) return "state-change";
-
-  if (type === 3) return "state-change";
   return "state-change";
 }
 
@@ -52,7 +51,13 @@ export function verifiedChainTransactionDetails(requestedHashes: string[], rawTr
       throw new Error(`Judecoin returned incomplete transaction fields for ${hash}`);
     }
 
-    const protocolZeroFee = parsed.rct_signatures?.type === 0;
+    // Judecoin's non-spending state-change / key-image-unlock transactions have
+    // empty vin/vout and omit rct_signatures entirely in get_transactions JSON.
+    // Do not apply this exemption to transfers or staking transactions.
+    const nonSpendingAdministrativeTransaction = (parsed.type === 1 || parsed.type === 2)
+      && parsed.vin.length === 0 && parsed.vout.length === 0
+      && parsed.rct_signatures == null;
+    const protocolZeroFee = parsed.rct_signatures?.type === 0 || nonSpendingAdministrativeTransaction;
     if (parsed.rct_signatures?.txnFee == null && !protocolZeroFee) {
       throw new Error(`Judecoin returned incomplete transaction fee fields for ${hash}`);
     }
@@ -72,6 +77,31 @@ export function verifiedChainTransactionDetails(requestedHashes: string[], rawTr
   const missing = [...requested].filter((hash) => !details.has(hash));
   if (missing.length) {
     throw new Error(`Judecoin omitted ${missing.length} requested transaction detail(s)`);
+  }
+  return details;
+}
+
+export function availableChainTransactionDetails(requestedHashes: string[], rawTransactions: unknown) {
+  if (!Array.isArray(rawTransactions)) return new Map<string, VerifiedChainTransactionDetail>();
+  const requested = new Set(requestedHashes.map((hash) => String(hash).toLowerCase()));
+  const transactions = new Map<string, RpcTransaction | null>();
+  for (const transaction of rawTransactions as RpcTransaction[]) {
+    const hash = String(transaction?.tx_hash || "").toLowerCase();
+    if (!requested.has(hash)) continue;
+    // Duplicate RPC entries are ambiguous and must not become verified records.
+    transactions.set(hash, transactions.has(hash) ? null : transaction);
+  }
+  const details = new Map<string, VerifiedChainTransactionDetail>();
+  for (const hash of requested) {
+    const transaction = transactions.get(hash);
+    if (!transaction) continue;
+    try {
+      const verified = verifiedChainTransactionDetails([hash], [transaction]);
+      const detail = verified.get(hash);
+      if (detail) details.set(hash, detail);
+    } catch {
+      continue;
+    }
   }
   return details;
 }

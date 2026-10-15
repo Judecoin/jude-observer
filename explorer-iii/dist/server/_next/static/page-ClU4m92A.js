@@ -1,0 +1,1 @@
+import{t as e}from"./framework~index~page~layout~page~page~page~page~app-page-cache-render~app-page-cache~app-ro~czc1rg2u-CaezHr7x.js";import{t}from"./bootstrap-context-bySjJAlz.js";import{t as n}from"./client-iel2_LWr.js";var r=e(),i=`force-dynamic`;function a(){return(0,r.jsx)(n,{initialData:t()})}export{a as default,i as dynamic};

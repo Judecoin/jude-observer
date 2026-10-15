@@ -10,6 +10,10 @@ export function isNonNegativeInteger(value: unknown): value is number {
   return Number.isInteger(value) && Number(value) >= 0;
 }
 
+function isNullableNonNegativeInteger(value: unknown) {
+  return value === null || isNonNegativeInteger(value);
+}
+
 export function isValidServiceNodesSnapshot(value: unknown): value is ServiceNodesLiveSnapshot {
   const snapshot = value as ServiceNodesLiveSnapshot | null;
   const nodes = snapshot?.serviceNodes;
@@ -87,14 +91,15 @@ export function isValidChainSnapshot(value: unknown): value is ChainSnapshot {
     && isValidNetworkPreview(snapshot)
     && Array.isArray(snapshot.blocks)
     && snapshot.blocks.every((block) => block && typeof block.hash === "string"
-      && [block.height, block.timestamp, block.txs, block.size, block.difficulty,
-        block.fee, block.reward, block.inputs, block.outputs].every(isNonNegativeInteger))
+      && [block.height, block.timestamp, block.txs, block.size, block.difficulty].every(isNonNegativeInteger)
+      && [block.fee, block.reward, block.inputs, block.outputs].every(isNullableNonNegativeInteger))
     && Array.isArray(snapshot.transactions)
     && snapshot.transactions.every((tx) => tx && typeof tx.hash === "string" && typeof tx.txType === "string"
       && [tx.block, tx.timestamp, tx.confirmations, tx.fee, tx.inputs, tx.outputs].every(isNonNegativeInteger)
       && (tx.size === null || isNonNegativeInteger(tx.size)))
-    && isValidServiceNodesSnapshot({ live: snapshot.live, fetchedAt: snapshot.fetchedAt,
-      height: snapshot.serviceNodesHeight, serviceNodes: snapshot.serviceNodes })
+    && ((snapshot.serviceNodes === null && snapshot.serviceNodesHeight === null)
+      || isValidServiceNodesSnapshot({ live: snapshot.live, fetchedAt: snapshot.fetchedAt,
+        height: snapshot.serviceNodesHeight, serviceNodes: snapshot.serviceNodes }))
     && isNonNegativeInteger(snapshot.pagination?.blockPage)
     && isNonNegativeInteger(snapshot.pagination?.transactionPage)
     && PAGE_SIZE_OPTIONS.includes(snapshot.pagination?.pageSize as typeof PAGE_SIZE_OPTIONS[number])
@@ -112,4 +117,14 @@ export function sameChainSelection(left: ChainSnapshot, right: ChainSnapshot) {
     && left.pagination.transactionScanSize === right.pagination.transactionScanSize
     && left.quorums.page === right.quorums.page
     && left.quorums.pageSize === right.quorums.pageSize;
+}
+
+export function shouldAcceptChainSnapshot(current: ChainSnapshot, next: ChainSnapshot) {
+  if (!sameChainSelection(current, next)) return true;
+  if (next.network.height !== current.network.height) return next.network.height > current.network.height;
+  // Header previews can finish after decoded details. Completeness takes
+  // precedence over request timestamps at the same chain height.
+  if (Boolean(current.pendingDetails) !== Boolean(next.pendingDetails)) return next.pendingDetails !== true;
+  if (Boolean(current.headerOnly) !== Boolean(next.headerOnly)) return next.headerOnly !== true;
+  return isNewerHeightSnapshot(current.network.height, current.fetchedAt, next.network.height, next.fetchedAt);
 }

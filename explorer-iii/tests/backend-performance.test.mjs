@@ -30,6 +30,7 @@ function productionFunctions(dependencies) {
   const program = [
     declaration("classifyTransaction"),
     declaration("verifiedChainTransactionDetails"),
+    declaration("availableChainTransactionDetails"),
     declaration("chainSnapshot"),
     declaration("json"),
     declaration("blockResponse"),
@@ -130,6 +131,7 @@ function chainHarness({ historical = false, held = [], emissionError = false } =
   return {
     calls, gates,
     run: () => functions.chainSnapshot(...(historical ? [2, 1] : [])),
+    overview: () => functions.chainSnapshot(historical ? 2 : 0, historical ? 1 : 0, 0, 5, 5, 5, true),
   };
 }
 
@@ -164,14 +166,14 @@ test("historical ranges and then independent tip/block/transaction details overl
   assert.equal(snapshot.network.latestBlockTimestamp, 1_699_999_900);
   assert.equal(snapshot.transactions[0].block, 840);
   assert.equal(snapshot.transactions[0].confirmations, 161);
-  assert.deepEqual([...harness.calls].sort(), ["emission", "info", "service-nodes", "quorum", "transaction-range", "block-range", "tip", "block:990", "block:989", "block:988", "block:987", "block:986", "transaction-details"].sort());
+  assert.deepEqual([...harness.calls].sort(), ["emission", "info", "transaction-range", "block-range", "tip", "block:990", "block:989", "block:988", "block:987", "block:986", "transaction-details"].sort());
 });
 
 test("chain overlap preserves verified network and transaction/block arithmetic", async () => {
   const harness = chainHarness();
   const snapshot = JSON.parse(JSON.stringify(await harness.run()));
   assert.deepEqual(snapshot.network, {
-    height: 1_000, difficulty: 18_000, targetSeconds: 180, hashrate: 100,
+    height: 1_000, difficulty: 18_000, targetSeconds: 180, targetVerified: true, hashrate: 100,
     hardFork: 16, protocol: "3", txPoolSize: 0, blockSizeMedian: 1_000, blockSizeLimit: 2_000,
     coinbase: null, fees: null, minedSupply: 50_000, supplyHeight: 1_000, supplySource: "Judecoin emission index API",
     latestBlockTimestamp: 1_699_999_900, latestBlockAgeSeconds: 100, synced: true,
@@ -184,7 +186,8 @@ test("chain overlap preserves verified network and transaction/block arithmetic"
     hash: HASH, block: 1_000, timestamp: 1_699_999_900, size: 321, confirmations: 1,
     txType: "transfer", fee: 17, reward: 0, inputs: 1, outputs: 1,
   }]);
-  assert.deepEqual(snapshot.serviceNodes, { total: 1, active: 1, height: 1_000 });
+  assert.equal(snapshot.serviceNodes, null);
+  assert.equal(snapshot.serviceNodesHeight, null);
   assert.deepEqual(snapshot.pagination, { blockPage: 0, transactionPage: 0, pageSize: 5, transactionScanSize: 160 });
   assert.equal(harness.calls.filter((call) => call.endsWith("-range")).length, 1, "Default page still uses one header range");
   assert.equal(harness.calls.filter((call) => call.startsWith("block:")).length, 5);
@@ -199,14 +202,31 @@ test("overlapped optional supply failure keeps the existing null supply contract
   assert.equal(snapshot.network.supplySource, null);
 });
 
-function transactionHarness() {
+test("a cold header preview returns actual rows without waiting for any decoded block, transaction or supply", async () => {
+  const harness = chainHarness({ held: ["emission", "block:1000", "transaction-details"] });
+  const snapshot = await harness.overview();
+  assert.equal(snapshot.pendingDetails, true);
+  assert.equal(snapshot.network.height, 1_000);
+  assert.deepEqual(Array.from(snapshot.blocks, (block) => block.height), [1_000, 999, 998, 997, 996]);
+  for (const block of snapshot.blocks) {
+    assert.equal(block.fee, null);
+    assert.equal(block.reward, null);
+    assert.equal(block.inputs, null);
+    assert.equal(block.outputs, null);
+  }
+  assert.equal(snapshot.transactions.length, 0);
+  assert.equal(snapshot.network.minedSupply, null);
+  assert.deepEqual(harness.calls, ["info", "block-range"]);
+});
+
+function transactionHarness({ blockHeight = TX.block_height, inPool = false } = {}) {
   const calls = [];
   const info = gate();
   const ring = gate();
   const { workerFetch } = productionFunctions({
     rpcFetch: async (path) => {
       calls.push(path);
-      if (path === "/get_transactions") return { data: { txs: [TX] } };
+      if (path === "/get_transactions") return { data: { txs: [{ ...TX, block_height: blockHeight, in_pool: inPool }] } };
       if (path === "/get_info") { await info.promise; return { data: { height: 1_001 } }; }
       assert.equal(path, "/get_outs");
       await ring.promise;
@@ -226,7 +246,7 @@ test("transaction confirmation and ring reads overlap and preserve all resolved 
   const response = await pending;
   assert.equal(response.status, 200);
   const data = await response.json();
-  assert.equal(data.confirmations, 3);
+  assert.equal(data.confirmations, 2);
   assert.equal(data.fee, 17);
   assert.equal(data.txType, "transfer");
   assert.equal(data.size, 321);
@@ -238,6 +258,24 @@ test("transaction confirmation and ring reads overlap and preserve all resolved 
     ],
   }]);
   assert.deepEqual(data.outputs, [{ index: 0, key: "output", globalIndex: 12, unlockHeight: 0, confidential: true }]);
+
+  for (const historical of [false, true]) {
+    const snapshot = await chainHarness({ historical }).run();
+    const listed = snapshot.transactions[0];
+    const selected = transactionHarness({ blockHeight: listed.block });
+    const selectedResponse = selected.run();
+    selected.ring.resolve();
+    selected.info.resolve();
+    const selectedData = await (await selectedResponse).json();
+    assert.equal(selectedData.confirmations, listed.confirmations, "Transaction Details must agree with the same chain snapshot's list");
+    if (!historical) assert.equal(selectedData.confirmations, 1, "A transaction in the latest block has one confirmation");
+    else assert.equal(selectedData.confirmations, 161, "Historical confirmation counts include the containing block exactly once");
+  }
+  const pool = transactionHarness({ inPool: true });
+  const poolResponse = pool.run();
+  pool.ring.resolve();
+  pool.info.resolve();
+  assert.equal((await (await poolResponse).json()).confirmations, 0, "Pool transactions remain unconfirmed");
 });
 
 test("optional ring failure preserves absolute indices and verified transaction values", async () => {
@@ -249,7 +287,7 @@ test("optional ring failure preserves absolute indices and verified transaction 
   const response = await pending;
   assert.equal(response.status, 200);
   const data = await response.json();
-  assert.equal(data.confirmations, 3);
+  assert.equal(data.confirmations, 2);
   assert.equal(data.fee, 17);
   assert.deepEqual(data.inputs[0].keyOffsets, [2, 5]);
   assert.deepEqual(data.inputs[0].ringMembers, []);

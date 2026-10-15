@@ -11,13 +11,15 @@ import {
 import { isValidServiceNodesSnapshot, isNewerHeightSnapshot } from "../snapshot-validation";
 import { rememberServiceNodesSnapshot, isProvisionalSnapshot } from "../snapshot-store";
 
-export function useServiceNodeRefresh({ highestKnownHeightRef, setServiceNodesLive, serviceNodeRefreshRef }: {
+export function useServiceNodeRefresh({ highestKnownHeightRef, setServiceNodesLive, serviceNodeRefreshRef, enabled = true }: {
+  enabled?: boolean;
   highestKnownHeightRef: RefObject<number>;
   setServiceNodesLive: Dispatch<SetStateAction<ServiceNodesLiveSnapshot | null>>;
   serviceNodeRefreshRef: RefObject<(() => void) | null>;
 }) {
 
   useEffect(() => {
+    if (!enabled) return;
     let active = true;
     let timer = 0;
     let controller: AbortController | null = null;
@@ -98,5 +100,5 @@ export function useServiceNodeRefresh({ highestKnownHeightRef, setServiceNodesLi
       if (serviceNodeRefreshRef.current === requestRefresh) serviceNodeRefreshRef.current = null;
       document.removeEventListener("visibilitychange", resume);
     };
-  }, [highestKnownHeightRef, serviceNodeRefreshRef, setServiceNodesLive]);
+  }, [enabled, highestKnownHeightRef, serviceNodeRefreshRef, setServiceNodesLive]);
 }

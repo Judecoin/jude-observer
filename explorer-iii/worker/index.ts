@@ -9,12 +9,30 @@ import {
   cachedServiceNodesLiveResponse,
 } from "./live-responses";
 import { cachedChainResponse } from "./chain-cache";
+import { blocksPageResponse, transactionsPageResponse } from "./ledger";
 import { DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES, handleImageOptimization } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import { explorerBootstrap, rememberBootstrapResponse } from "./bootstrap";
+import { runWithExplorerBootstrap } from "./bootstrap-context";
+
+const explorerPages = new Set(["/", "/service-nodes", "/statistics", "/blocks", "/transactions"]);
 
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    const capture = async (kind: "blocks" | "transactions" | "network" | "transactionPool" | "serviceNodes" | "quorums" | "chain", pending: Promise<Response>) => {
+      const response = await pending;
+      if (response.ok) void rememberBootstrapResponse(kind, url, response, ctx).catch(() => undefined);
+      return response;
+    };
+
+    if (url.pathname === "/api/blocks" && request.method === "GET") {
+      return capture("blocks", blocksPageResponse(url));
+    }
+
+    if (url.pathname === "/api/transactions" && request.method === "GET") {
+      return capture("transactions", transactionsPageResponse(url));
+    }
 
     if (url.pathname === "/api/deregistered-service-nodes" && request.method === "GET") {
       return deregisteredNodesResponse(url);
@@ -33,23 +51,23 @@ const worker = {
     }
 
     if (url.pathname === "/api/quorums" && request.method === "GET") {
-      return cachedQuorumLiveResponse(url, ctx);
+      return capture("quorums", cachedQuorumLiveResponse(url, ctx));
     }
 
     if (url.pathname === "/api/network" && request.method === "GET") {
-      return cachedNetworkLiveResponse(url, ctx);
+      return capture("network", cachedNetworkLiveResponse(url, ctx));
     }
 
     if (url.pathname === "/api/transaction-pool" && request.method === "GET") {
-      return cachedTransactionPoolLiveResponse(url, ctx);
+      return capture("transactionPool", cachedTransactionPoolLiveResponse(url, ctx));
     }
 
     if (url.pathname === "/api/service-nodes-live" && request.method === "GET") {
-      return cachedServiceNodesLiveResponse(url, ctx);
+      return capture("serviceNodes", cachedServiceNodesLiveResponse(url, ctx));
     }
 
     if (url.pathname === "/api/chain" && request.method === "GET") {
-      return cachedChainResponse(request, url, ctx);
+      return capture("chain", cachedChainResponse(request, url, ctx));
     }
 
     if (url.pathname === "/_vinext/image") {
@@ -63,6 +81,10 @@ const worker = {
       }, allowedWidths);
     }
 
+    if (request.method === "GET" && explorerPages.has(url.pathname)) {
+      const initialData = { ...await explorerBootstrap(url, ctx), renderedAt: Date.now() };
+      return runWithExplorerBootstrap(initialData, () => handler.fetch(request, env, ctx));
+    }
     return handler.fetch(request, env, ctx);
   },
 };

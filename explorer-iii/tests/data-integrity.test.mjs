@@ -160,7 +160,7 @@ test("requires two synchronized pools before a pool snapshot can be available", 
 test("AST wires both integrity guards into the live worker fallback paths", () => {
   const chainCalls = calledFunctionNames(functionDeclaration("chainSnapshot"));
   const poolCalls = calledFunctionNames(functionDeclaration("transactionPoolSnapshot"));
-  assert.ok(chainCalls.includes("verifiedChainTransactionDetails"));
+  assert.ok(chainCalls.includes("availableChainTransactionDetails"));
   assert.ok(poolCalls.includes("requireSynchronizedPoolQuorum"));
 
   const chainCache = functionSource("cachedChainResponse");

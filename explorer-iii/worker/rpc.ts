@@ -1,5 +1,5 @@
 import type { RpcStatus, RpcResult, RpcMethods, RpcEnvelope } from "./rpc-types";
-import { JUDECOIN_EMISSION_API, JUDECOIN_RPC_NODES, RPC_CACHE_MAX_ENTRIES, RPC_CACHE_TTL_MS } from "./constants";
+import { JUDECOIN_EMISSION_API, JUDECOIN_RPC_NODES, RPC_CACHE_MAX_ENTRIES, RPC_CACHE_TTL_MS, RPC_FAILOVER_DELAY_MS } from "./constants";
 
 export async function rpcFetchNode<T extends RpcStatus = RpcStatus>(node: string, path: string, init?: RequestInit, timeoutOverrideMs?: number): Promise<RpcResult<T>> {
   const controller = new AbortController();
@@ -8,7 +8,12 @@ export async function rpcFetchNode<T extends RpcStatus = RpcStatus>(node: string
   const timeoutMs = timeoutOverrideMs
     ?? (path === "/json_rpc" && body.includes('"method":"get_service_nodes"') ? 35_000 : 15_000);
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const parentSignal = init?.signal;
+  const abortFromParent = () => controller.abort(parentSignal?.reason);
+  if (parentSignal?.aborted) abortFromParent();
+  else parentSignal?.addEventListener("abort", abortFromParent, { once: true });
   try {
+    controller.signal.throwIfAborted();
     const response = await fetch(`${node}${path}`, {
       ...init,
       signal: controller.signal,
@@ -23,26 +28,59 @@ export async function rpcFetchNode<T extends RpcStatus = RpcStatus>(node: string
     return { node, data };
   } finally {
     clearTimeout(timer);
+    parentSignal?.removeEventListener("abort", abortFromParent);
   }
 }
 
 export const rpcNodePreference: { current: string | null } = { current: null };
 
 export async function rpcFetch<T extends RpcStatus = RpcStatus>(path: string, init?: RequestInit): Promise<RpcResult<T>> {
-  let lastError: unknown;
   const nodes = rpcNodePreference.current
     ? [rpcNodePreference.current, ...JUDECOIN_RPC_NODES.filter((node) => node !== rpcNodePreference.current)]
     : [...JUDECOIN_RPC_NODES];
-  for (const node of nodes) {
-    try {
-      const result = await rpcFetchNode<T>(node, path, init);
-      rpcNodePreference.current = node;
-      return result;
-    } catch (error) {
-      lastError = error;
-    }
+  const controller = new AbortController();
+  const parentSignal = init?.signal;
+  const abortFromParent = () => controller.abort(parentSignal?.reason);
+  if (parentSignal?.aborted) abortFromParent();
+  else parentSignal?.addEventListener("abort", abortFromParent, { once: true });
+  let hedgeTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    controller.signal.throwIfAborted();
+    return await new Promise<RpcResult<T>>((resolve, reject) => {
+      let nextNode = 0;
+      let inFlight = 0;
+      let settled = false;
+      let lastError: unknown;
+      const startNext = () => {
+        if (settled || nextNode >= nodes.length) return;
+        clearTimeout(hedgeTimer);
+        const node = nodes[nextNode++];
+        inFlight += 1;
+        if (nextNode < nodes.length) hedgeTimer = setTimeout(startNext, RPC_FAILOVER_DELAY_MS);
+        void rpcFetchNode<T>(node, path, { ...init, signal: controller.signal }).then((result) => {
+          if (settled) return;
+          settled = true;
+          rpcNodePreference.current = node;
+          resolve(result);
+        }).catch((error) => {
+          inFlight -= 1;
+          lastError = error;
+          if (settled) return;
+          if (controller.signal.aborted || (nextNode >= nodes.length && inFlight === 0)) {
+            settled = true;
+            reject(lastError instanceof Error ? lastError : new Error("No synchronized Judecoin data source is reachable"));
+          } else if (nextNode < nodes.length) {
+            startNext();
+          }
+        });
+      };
+      startNext();
+    });
+  } finally {
+    clearTimeout(hedgeTimer);
+    parentSignal?.removeEventListener("abort", abortFromParent);
+    controller.abort();
   }
-  throw lastError instanceof Error ? lastError : new Error("No synchronized Judecoin data source is reachable");
 }
 
 export async function jsonRpc<M extends keyof RpcMethods>(method: M, params: Record<string, unknown> = {}) {
@@ -94,8 +132,8 @@ export function cachedRpcFetch<T extends RpcStatus = RpcStatus>(path: string, in
   return cachedRpcResult(requestCacheKey("any", path, init), () => rpcFetch<T>(path, init));
 }
 
-export function cachedRpcFetchNode<T extends RpcStatus = RpcStatus>(node: string, path: string, init?: RequestInit) {
-  return cachedRpcResult(requestCacheKey(node, path, init), () => rpcFetchNode<T>(node, path, init));
+export function cachedRpcFetchNode<T extends RpcStatus = RpcStatus>(node: string, path: string, init?: RequestInit, timeoutOverrideMs?: number) {
+  return cachedRpcResult(requestCacheKey(node, path, init), () => rpcFetchNode<T>(node, path, init, timeoutOverrideMs));
 }
 
 export function cachedJsonRpc<M extends keyof RpcMethods>(method: M, params: Record<string, unknown> = {}) {

@@ -1,6 +1,6 @@
 {
   "name": "judecoin-blockchain-explorer-iii",
-  "version": "1.0.12",
+  "version": "1.0.29",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -14,7 +14,7 @@
     "test": "pnpm run build && node --experimental-strip-types --experimental-vm-modules --test tests/*.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --max-warnings 0",
     "deploy": "pnpm run build && wrangler deploy",
-    "test:unit": "node --experimental-strip-types --experimental-vm-modules --test tests/deregistration.test.mjs tests/worker-lifecycle.test.mjs",
+    "test:unit": "node --experimental-strip-types --experimental-vm-modules --test tests/deregistration.test.mjs tests/worker-lifecycle.test.mjs tests/transaction-classification.test.mjs tests/deregistration-eta.test.mjs tests/detail-search.test.mjs tests/request-performance.test.mjs",
     "typecheck": "tsc --noEmit",
     "check": "pnpm run lint && pnpm run typecheck && pnpm test"
   },

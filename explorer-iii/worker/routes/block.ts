@@ -13,6 +13,12 @@ export async function blockResponse(url: URL): Promise<Response> {
         if (!header) return json({ error: "Block not found" }, 404);
         const blockResult = response.data?.result || {};
         const parsedBlock: DecodedBlock = JSON.parse(blockResult.json || "{}");
+        const rawTransactionHashes = parsedBlock.tx_hashes ?? (header.num_txes === 0 ? [] : null);
+        const transactionHashes = Array.isArray(rawTransactionHashes)
+          && rawTransactionHashes.length === header.num_txes
+          && rawTransactionHashes.every((hash) => typeof hash === "string" && /^[a-f0-9]{64}$/i.test(hash))
+          && new Set(rawTransactionHashes.map((hash) => hash.toLowerCase())).size === rawTransactionHashes.length
+          ? rawTransactionHashes.map((hash) => hash.toLowerCase()) : null;
         const minerHash = String(blockResult.miner_tx_hash || header.miner_tx_hash || "");
         const minerResponse = minerHash ? await rpcFetch<RpcTransactions>("/get_transactions", {
           method: "POST",
@@ -38,6 +44,7 @@ export async function blockResponse(url: URL): Promise<Response> {
           hash: header.hash,
           timestamp: header.timestamp,
           transactions: header.num_txes,
+          transactionHashes,
           size: header.block_size,
           difficulty: header.difficulty,
           majorVersion: header.major_version,

@@ -16,6 +16,8 @@ export type RpcInfo = RpcStatus & {
   difficulty?: number;
   hard_fork?: number;
   version?: string;
+  top_block_hash?: string;
+  tx_count?: number;
   tx_pool_size?: number;
   block_weight_median?: number;
   block_size_median?: number;
@@ -70,7 +72,7 @@ export type RpcServiceNode = {
 };
 
 export type RpcTransactionExtra = {
-  sn_state_change?: { type?: string };
+  sn_state_change?: { type?: string; height?: number; index?: number; voters?: number[]; reasons?: string[] };
   sn_registration?: unknown;
   sn_contributor?: unknown;
   key_image_unlock?: unknown;

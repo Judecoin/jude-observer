@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
+import { AsyncLocalStorage } from "node:async_hooks";
 import vm from "node:vm";
 import test from "node:test";
 
@@ -17,7 +18,7 @@ async function fixture() {
   const state = {
     tip: seed.scannedThrough + 1, time: Date.now(), offline: false, rejectFirst: false, blockFailure: null,
     blacklist: [{ key_image: knownStake.keyImage, unlock_height: seed.scannedThrough + 100 }],
-    calls: [],
+    calls: [], cancelled: [],
   };
   const response = (data) => new Response(JSON.stringify(data), { headers: { "content-type": "application/json" } });
   const context = vm.createContext({
@@ -27,6 +28,14 @@ async function fixture() {
       if (state.offline) throw new Error("Unavailable");
       const url = new URL(input);
       state.calls.push({ host: url.hostname, path: url.pathname });
+      if (state.stallFirst && url.hostname === "node1.judecoin.com" && url.pathname === "/get_info") {
+        return new Promise((_, reject) => {
+          init.signal.addEventListener("abort", () => {
+            state.cancelled.push(url.hostname);
+            reject(new Error("Cancelled"));
+          }, { once: true });
+        });
+      }
       if (url.pathname === "/get_info") return response({ status: "OK", height: state.tip + 1 });
       const body = JSON.parse(init.body);
       if (body.method === "get_block") {
@@ -73,6 +82,7 @@ async function fixture() {
     let values;
     if (specifier.includes("deregistered-service-nodes.json")) values = { default: history };
     else if (specifier.includes("service-node-stake-index.json")) values = { default: seed };
+    else if (specifier === "node:async_hooks") values = { AsyncLocalStorage };
     else if (specifier.includes("image-optimization")) values = { handleImageOptimization() {}, DEFAULT_DEVICE_SIZES: [], DEFAULT_IMAGE_SIZES: [] };
     else if (specifier.includes("app-router-entry")) values = { default: { fetch: async () => new Response("Not found", { status: 404 }) } };
     else throw new Error(`Unexpected module ${specifier}`);
@@ -109,6 +119,22 @@ test("the Worker updates the total and resolves a newly deregistered node detail
   assert.equal(detail.publicKey, newKey);
   assert.equal(detail.historical, true);
   assert.equal(detail.registrationHeight, seed.scannedThrough + 1);
+  assert.equal(detail.unlockHeightVerified, true);
+  assert.equal(detail.sourceHeight, f.state.tip);
+});
+
+test("a retained historical schedule no longer claims a current verified lock after the blacklist clears", async () => {
+  const f = await fixture();
+  f.state.blacklist.push({ key_image: newImage, unlock_height: seed.scannedThrough + 200 });
+  await f.get("/api/deregistered-service-nodes");
+  f.state.blacklist = [];
+  f.state.time += 31000;
+  const response = await f.get(`/api/service-node?key=${newKey}`);
+  assert.equal(response.status, 200);
+  const detail = await response.json();
+  assert.equal(detail.unlockHeight, seed.scannedThrough + 200);
+  assert.equal(detail.unlockHeightVerified, false);
+  assert.equal(detail.sourceHeight, f.state.tip);
 });
 
 test("an expired or cleared blacklist decreases the live total", async () => {
@@ -138,6 +164,15 @@ test("JSON RPC errors trigger failover to another configured node", async () => 
   assert.equal(response.status, 200);
   assert.equal((await response.json()).total, 1);
   assert.ok(f.state.calls.some((call) => call.host === "node.judecoin.info"));
+});
+
+test("a stalled preferred deregistration source does not block a complete fallback source", async () => {
+  const f = await fixture();
+  f.state.stallFirst = true;
+  const response = await f.get("/api/deregistered-service-nodes");
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).total, 1);
+  assert.ok(f.state.cancelled.includes("node1.judecoin.com"));
 });
 
 for (const [name, failure] of [

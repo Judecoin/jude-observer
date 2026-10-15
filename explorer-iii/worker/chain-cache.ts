@@ -30,6 +30,7 @@ function chainCacheKey(request: Request, url: URL) {
   for (const name of ["blockPageSize", "transactionPageSize", "quorumPageSize"]) {
     cacheUrl.searchParams.set(name, String(explorerPageSize(url.searchParams.get(name))));
   }
+  if (url.searchParams.get("overview") === "1") cacheUrl.searchParams.set("overview", "1");
   return new Request(cacheUrl, { method: "GET" });
 }
 
@@ -41,13 +42,14 @@ async function writeChainCache(cache: EdgeCache, cacheKey: Request, url: URL) {
   const stored = storedChainResponse(response);
   try {
     const [next, current] = await Promise.all([
-      stored.clone().json() as Promise<{ network?: { height?: number } }>,
+      stored.clone().json() as Promise<{ network?: { height?: number }; pendingDetails?: boolean }>,
       cache.match(cacheKey),
     ]);
     if (current) {
-      const previous = await current.clone().json() as { network?: { height?: number } };
+      const previous = await current.clone().json() as { network?: { height?: number }; pendingDetails?: boolean };
       if (Number.isInteger(previous.network?.height)
-        && Number(previous.network?.height) > Number(next.network?.height)) {
+        && (Number(previous.network?.height) > Number(next.network?.height)
+          || (previous.network?.height === next.network?.height && !previous.pendingDetails && next.pendingDetails))) {
         return noStoreResponse(current);
       }
     }

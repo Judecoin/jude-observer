@@ -170,6 +170,24 @@ test("parallel reads share one refresh", async () => {
   assert.ok(results.every((result) => result.total === 1));
 });
 
+test("a fully resolved live blacklist returns without scanning an unrelated long backlog", async () => {
+  const f = fixture();
+  f.state.height = 5101;
+  let scans = 0;
+  f.reader.headers = async () => { scans += 1; throw new Error("Historical scans unavailable"); };
+  const result = await createDeregistrationTracker(seed(), f.open).read(true);
+  assert.equal(result.live, true);
+  assert.equal(result.total, 0, "The old stake has reached its unlock height");
+  assert.equal(scans, 0);
+  f.state.blacklist = [{ key_image: oldImage, unlock_height: 6000 }];
+  const locked = await createDeregistrationTracker(seed(), f.open).read(true);
+  assert.equal(locked.live, true);
+  assert.equal(locked.total, 1);
+  assert.equal(locked.sourceHeight, 5101);
+  assert.equal(locked.indexedThrough, 100, "Do not fabricate a scanned checkpoint");
+  assert.equal(scans, 0);
+});
+
 test("rechecks an altered checkpoint block after a reorganization", async () => {
   const f = fixture();
   f.state.txs.push(transaction(101, newKey, newImage));

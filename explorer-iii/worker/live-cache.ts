@@ -10,6 +10,8 @@ type LiveCachePolicy = {
   minimumHeight?: number;
 };
 
+const pendingLiveRefreshes = new WeakMap<EdgeCache, Map<string, Promise<Response>>>();
+
 function storedLiveResponse(response: Response, policy: LiveCachePolicy) {
   const headers = new Headers(response.headers);
   headers.set("cache-control", `public, max-age=0, s-maxage=${policy.ttlSeconds}`);
@@ -21,7 +23,7 @@ function storedLiveResponse(response: Response, policy: LiveCachePolicy) {
   });
 }
 
-async function refreshLiveCache(cache: EdgeCache, cacheKey: Request, policy: LiveCachePolicy, create: () => Promise<Response>) {
+async function writeLiveCache(cache: EdgeCache, cacheKey: Request, policy: LiveCachePolicy, create: () => Promise<Response>) {
   const response = await create();
   if (!response.ok) return response;
   const stored = storedLiveResponse(response, policy);
@@ -42,6 +44,22 @@ async function refreshLiveCache(cache: EdgeCache, cacheKey: Request, policy: Liv
     // Cache failures must not block fresh data.
   }
   return noStoreResponse(stored);
+}
+
+async function refreshLiveCache(cache: EdgeCache, cacheKey: Request, policy: LiveCachePolicy, create: () => Promise<Response>) {
+  let pendingForCache = pendingLiveRefreshes.get(cache);
+  if (!pendingForCache) {
+    pendingForCache = new Map();
+    pendingLiveRefreshes.set(cache, pendingForCache);
+  }
+  // A reader requiring a newer height must not join an older in-flight load.
+  const key = `${cacheKey.url}|${policy.minimumHeight ?? "any"}`;
+  let pending = pendingForCache.get(key);
+  if (!pending) {
+    pending = writeLiveCache(cache, cacheKey, policy, create).finally(() => pendingForCache.delete(key));
+    pendingForCache.set(key, pending);
+  }
+  return (await pending).clone();
 }
 
 export async function cachedLiveResponse(url: URL, policy: LiveCachePolicy, create: () => Promise<Response>, ctx: ExecutionContext) {

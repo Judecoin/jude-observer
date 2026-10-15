@@ -1,7 +1,7 @@
 import { createDeregistrationTracker } from "./deregistration";
 import type { EdgeCache } from "./runtime-types";
 import serviceNodeStakeIndex from "../data/service-node-stake-index.json";
-import type { RpcResult, RpcInfo, RpcEnvelope, RpcMethods, RpcTransactions } from "./rpc-types";
+import type { RpcInfo, RpcEnvelope, RpcMethods, RpcTransactions } from "./rpc-types";
 import { rpcNodePreference, rpcFetchNode } from "./rpc";
 import { JUDECOIN_RPC_NODES } from "./constants";
 
@@ -13,18 +13,19 @@ export function deregistrationTracker(origin: string) {
   const cache = (globalThis as unknown as { caches?: { default?: EdgeCache } }).caches?.default;
   const cacheKey = new Request(`${origin}/_internal/stake-index-v2`);
   const tracker = createDeregistrationTracker(serviceNodeStakeIndex, async () => {
-    let info: RpcResult<RpcInfo> | undefined;
-    let blacklist: unknown;
     const nodes = rpcNodePreference.current
       ? [rpcNodePreference.current, ...JUDECOIN_RPC_NODES.filter((node) => node !== rpcNodePreference.current)]
       : [...JUDECOIN_RPC_NODES];
-    for (const node of nodes) {
-      try {
-        const candidate = await rpcFetchNode<RpcInfo>(node, "/get_info");
+    const controllers = nodes.map(() => new AbortController());
+    let selected;
+    try {
+      selected = await Promise.any(nodes.map(async (node, index) => {
+        const candidate = await rpcFetchNode<RpcInfo>(node, "/get_info", { signal: controllers[index].signal });
         if (candidate.data?.status !== "OK" || !Number.isInteger(candidate.data.height)
-          || candidate.data.height - 1 < serviceNodeStakeIndex.scannedThrough) continue;
+          || candidate.data.height - 1 < serviceNodeStakeIndex.scannedThrough) throw new Error("Node is behind the stake index");
         const response = await rpcFetchNode<RpcEnvelope<RpcMethods["get_service_node_blacklisted_key_images"]>>(node, "/json_rpc", {
           method: "POST",
+          signal: controllers[index].signal,
           body: JSON.stringify({
             jsonrpc: "2.0",
             id: "node-lifecycle",
@@ -32,16 +33,16 @@ export function deregistrationTracker(origin: string) {
             params: {},
           }),
         });
-        if (!Array.isArray(response.data?.result?.blacklist)) continue;
-        info = candidate;
-        blacklist = response.data.result.blacklist;
-        rpcNodePreference.current = node;
-        break;
-      } catch {
-        continue;
-      }
+        if (!Array.isArray(response.data?.result?.blacklist)) throw new Error("Invalid deregistration response");
+        return { info: candidate, blacklist: response.data.result.blacklist };
+      }));
+    } catch {
+      throw new Error("Deregistration data unavailable");
+    } finally {
+      controllers.forEach((controller) => controller.abort());
     }
-    if (!info) throw new Error("Deregistration data unavailable");
+    const { info, blacklist } = selected;
+    rpcNodePreference.current = info.node;
     const sourceNode = info.node;
     const call = async <M extends keyof RpcMethods>(method: M, params = {}) => {
       const response = await rpcFetchNode<RpcEnvelope<RpcMethods[M]>>(sourceNode, "/json_rpc", {
@@ -58,6 +59,7 @@ export function deregistrationTracker(origin: string) {
         start_height: start,
         end_height: end,
         get_tx_hashes: true,
+        fill_pow_hash: false,
       })).headers,
       transactions: async (hashes: string[]) => {
         const response = await rpcFetchNode<RpcTransactions>(sourceNode, "/get_transactions", {

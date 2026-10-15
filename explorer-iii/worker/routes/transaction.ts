@@ -100,7 +100,7 @@ export async function transactionResponse(url: URL): Promise<Response> {
           type: "transaction",
           hash: tx.tx_hash || hash,
           blockHeight: tx.block_height,
-          confirmations: tx.in_pool ? 0 : Math.max(0, Number(infoResponse.data?.height || 0) - Number(tx.block_height || 0) + 1),
+          confirmations: tx.in_pool ? 0 : Math.max(0, Number(infoResponse.data?.height || 0) - Number(tx.block_height || 0)),
           timestamp: tx.block_timestamp,
           size: tx.size,
           inPool: Boolean(tx.in_pool),

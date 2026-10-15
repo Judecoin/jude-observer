@@ -1,5 +1,8 @@
-import Explorer from "../page";
+import ExplorerClient from "../explorer/client";
+import { readExplorerBootstrap } from "../../worker/bootstrap-context";
+
+export const dynamic = "force-dynamic";
 
 export default function ServiceNodesPage() {
-  return <Explorer serviceNodesOnly />;
+  return <ExplorerClient serviceNodesOnly initialData={readExplorerBootstrap()} />;
 }

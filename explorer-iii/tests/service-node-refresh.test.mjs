@@ -68,6 +68,7 @@ function refreshHarness(initialSnapshot, knownHeight = initialSnapshot.height) {
   const highestKnownHeightRef = { current: knownHeight };
   const serviceNodeRefreshRef = { current: null };
   const context = {
+    enabled: true,
     AbortController, highestKnownHeightRef, serviceNodeRefreshRef,
     document: {
       hidden: false,
@@ -154,7 +155,7 @@ test("a stalled browser read times out, retains the last verified snapshot, and 
   const old = snapshot(867_293, 440, "2026-09-20T23:21:07.000Z");
   const harness = refreshHarness(old, 867_294);
   t.after(() => harness.cleanup());
-  await harness.tick(119_999);
+  await harness.tick(44_999);
   assert.equal(harness.requests[0].signal.aborted, false);
   assert.strictEqual(harness.current, old);
 

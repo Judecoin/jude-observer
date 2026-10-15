@@ -52,7 +52,8 @@ export async function serviceNodeResponse(url: URL): Promise<Response> {
         if (!node) {
           const tracker = deregistrationTracker(url.origin);
           const current = await tracker.read();
-          const historicalNode = tracker.find(key) || deregisteredHistory.nodes.find((entry) => entry.publicKey === key);
+          const lockedNode = current.nodes.find((entry) => entry.publicKey === key);
+          const historicalNode = lockedNode || tracker.find(key) || deregisteredHistory.nodes.find((entry) => entry.publicKey === key);
           if (!historicalNode && !current.live) return json({ error: "Service node records are synchronizing" }, 503);
           if (!historicalNode) return json({ error: "Service node not found" }, 404);
           return json({
@@ -63,6 +64,9 @@ export async function serviceNodeResponse(url: URL): Promise<Response> {
             funded: false,
             registrationHeight: historicalNode.registeredAt,
             unlockHeight: historicalNode.unlockedAt,
+            // Archived schedules alone cannot verify that stake is still blacklisted.
+            unlockHeightVerified: Boolean(lockedNode),
+            sourceHeight: current.sourceHeight,
             contributions: historicalNode.contributions,
           });
         }

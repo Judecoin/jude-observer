@@ -113,6 +113,17 @@ test("chain cache isolates all page selections and page sizes", async () => {
   assert.equal(harness.stored.size, queries.length);
 });
 
+test("lightweight header previews never occupy a complete chain cache key", async () => {
+  const harness = cacheHarness(async (url) => chainResponse(1_000, {
+    pendingDetails: url.searchParams.get("overview") === "1",
+  }));
+  assert.equal((await (await harness.request("overview=1")).json()).pendingDetails, true);
+  assert.equal((await (await harness.request()).json()).pendingDetails, false);
+  assert.equal((await (await harness.request("overview=1")).json()).pendingDetails, true);
+  assert.equal(harness.calls.length, 2);
+  assert.equal(harness.stored.size, 2);
+});
+
 test("a requested tip ahead of either fresh or stale chain cache waits for a caught-up result", async () => {
   const harness = cacheHarness(async (url) => chainResponse(Number(url.searchParams.get("tip") || 1_000)));
   assert.equal((await (await harness.request("tip=1000")).json()).network.height, 1_000);
@@ -148,6 +159,15 @@ test("a slower lower-height refresh cannot replace a newer verified chain snapsh
   assert.deepEqual(await response.json(), newer);
   assert.deepEqual(await harness.stored.values().next().value.clone().json(), newer);
   assert.equal(harness.calls.length, 2);
+});
+
+test("a transient decode failure cannot replace complete same-height cached records", async () => {
+  const harness = cacheHarness(async (_url, sequence) => chainResponse(1_000,
+    sequence === 1 ? {} : { pendingDetails: true, transactions: [] }));
+  const complete = await (await harness.request()).json();
+  harness.advance(300_001);
+  assert.deepEqual(await (await harness.request()).json(), complete);
+  assert.deepEqual(await harness.stored.values().next().value.clone().json(), complete);
 });
 
 test("concurrent identical chain refreshes share one producer and independently readable responses", async () => {

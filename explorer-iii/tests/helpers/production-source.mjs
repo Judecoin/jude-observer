@@ -18,7 +18,10 @@ export async function readProductionSource(entry) {
       const specifier = statement.moduleSpecifier.text;
       if (specifier.startsWith(".") && !specifier.endsWith(".json")) {
         const target = new URL(specifier, url);
-        if (target.pathname.endsWith("/worker/deregistration")) continue;
+        // Follow the RSC page's client boundary, retaining its real Home wrapper
+        // for structural checks without importing request-local server context.
+        if (["/worker/deregistration", "/worker/bootstrap-context", "/worker/bootstrap"]
+          .some((serverModule) => target.pathname.endsWith(serverModule))) continue;
         let resolved = false;
         for (const extension of [".ts", ".tsx"]) {
           const candidate = new URL(target.href + extension);

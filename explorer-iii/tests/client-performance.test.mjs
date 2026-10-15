@@ -36,7 +36,7 @@ function effectSource(marker) {
 
 const formatterSource = sourceFile.statements.filter((node) => ts.isVariableStatement(node)
   && node.declarationList.declarations.some((declaration) => [
-    "compactNumberFormatter", "judeNumberFormatter", "atomicJudeNumberFormatter",
+    "compactNumberFormatter", "judeNumberFormatter", "atomicJudeNumberFormatter", "feeJudeNumberFormatter",
   ].includes(declaration.name.getText(sourceFile)))).map((node) => node.getText(sourceFile)).join("\n");
 
 function loadFunctions(names, context = {}, prefix = "") {
@@ -51,6 +51,7 @@ function loadFunctions(names, context = {}, prefix = "") {
   const testModule = { exports: {} };
   vm.runInNewContext(compiled, {
     module: testModule, exports: testModule.exports, console, AbortController,
+    Response, DOMException, AggregateError, Error, setTimeout, clearTimeout,
     require(name) {
       assert.equal(name, "react/jsx-runtime");
       return { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) };
@@ -89,18 +90,22 @@ const payloads = {
   },
 };
 
-function detailHarness(kind, query = HASH) {
+function detailHarness(kind, query = HASH, responseData = payloads[kind]) {
   const observed = { calls: [], history: [], details: [], messages: [], pending: [] };
-  const successfulResponse = Response.json(payloads[kind]);
+  const successfulResponse = Response.json(responseData);
   const functions = loadFunctions([
-    "beginDetailRequest", "resolveDetailRequest", "openBlock", "openTransaction", "openServiceNode", "search",
-    "compact", "jude", "atomicJude", "difficulty", "bytes", "inOut",
+    "cancelSearch", "beginDetailRequest", "resolveDetailRequest", "readPublicDetail", "openBlock", "openTransaction", "openServiceNode", "search",
+    "lookupPublicIdentifier", "createServiceNodeDetail", "serviceNodeUnlockEstimate", "estimatedBlockWait", "estimatedBlockDate", "utcTimestamp",
+    "compact", "jude", "atomicJude", "feeJude", "difficulty", "bytes", "inOut",
   ], {
     query,
     liveNetwork: null,
     serviceNodeHeight: 0,
     detailAbortController: { current: null },
     detailRequestId: { current: 0 },
+    searchRequestId: { current: 0 },
+    searchAbortController: { current: null },
+    setServiceNodeRecord() {},
     setDetailPending: (value) => observed.pending.push(value),
     setDetail: (value) => observed.details.push(value),
     setDetailRenderKey() {},
@@ -117,7 +122,7 @@ function detailHarness(kind, query = HASH) {
 }
 
 for (const [kind, expectedRequests, historyPrefix] of [
-  ["block", 1, "block"], ["transaction", 2, "tx"], ["service-node", 3, "node"],
+  ["block", 3, "block"], ["transaction", 3, "tx"], ["service-node", 3, "node"],
 ]) {
   test(`search reuses the successful ${kind} response without requesting it twice`, async () => {
     const harness = detailHarness(kind);
@@ -131,6 +136,66 @@ for (const [kind, expectedRequests, historyPrefix] of [
     assert.deepEqual(Array.from(harness.observed.details[0].rows), []);
     assert.equal(harness.observed.pending.at(-1), null);
     assert.equal(harness.observed.messages.at(-1), "");
+
+    const fields = (detail) => Object.fromEntries(detail.sections.flatMap((section) => section.rows).map((row) => [row.label, row.value]));
+    const initialDetail = harness.observed.details[0];
+    const initialFields = fields(initialDetail);
+    if (kind === "transaction") {
+      for (const label of ["TRANSACTION PUBLIC KEY", "PAYMENT ID (ENCRYPTED)", "RINGCT", "INPUTS / OUTPUTS", "UNLOCK TIME / HEIGHT", "DOUBLE-SPEND FLAG", "EXTRA"]) {
+        assert.ok(!(label in initialFields), `Absent transaction field should not occupy a row: ${label}`);
+      }
+      assert.equal(initialFields.FEE, "0.00000000 JUDE");
+      assert.ok(!initialDetail.sections.some((section) => section.title === "Extra"));
+      assert.equal(initialDetail.raw, "{}");
+
+      const pool = detailHarness(kind, HASH, { ...payloads.transaction, inPool: true, confirmations: 0, blockHeight: 0, extra: " " });
+      await pool.openTransaction(HASH, undefined, false);
+      const poolFields = fields(pool.observed.details[0]);
+      assert.equal(poolFields.FEE, "0.00000000 JUDE", "A real zero fee must remain visible");
+      assert.equal(poolFields.CONFIRMATIONS, "0", "A pool transaction must retain its real zero confirmations");
+      assert.equal(poolFields.STATUS, "Transaction Pool");
+      assert.ok(!pool.observed.details[0].sections.some((section) => section.title === "Extra"));
+
+      const reported = { ...payloads.transaction,
+        publicKey: "b".repeat(64), paymentId: "0123456789abcdef", unlockTime: 1_000,
+        ringCtType: 2, inputs: [{ type: "key" }], outputs: [{ index: 0, key: "output", confidential: true }],
+        doubleSpendSeen: true, extra: "010203", raw: { unlock_time: 1_000 },
+      };
+      const rich = detailHarness(kind, HASH, reported);
+      await rich.openTransaction(HASH, undefined, false);
+      const richFields = fields(rich.observed.details[0]);
+      assert.equal(richFields["TRANSACTION PUBLIC KEY"], reported.publicKey);
+      assert.equal(richFields["PAYMENT ID (ENCRYPTED)"], reported.paymentId);
+      assert.equal(richFields["UNLOCK TIME / HEIGHT"], "1,000");
+      assert.equal(richFields.RINGCT, "Yes / type 2");
+      assert.equal(richFields["INPUTS / OUTPUTS"], "1/1");
+      assert.equal(richFields["DOUBLE-SPEND FLAG"], "Detected");
+      assert.equal(richFields.EXTRA, "010203");
+      assert.equal(rich.observed.details[0].raw, JSON.stringify(reported.raw, null, 2));
+    } else if (kind === "block") {
+      for (const label of ["TRANSACTION PUBLIC KEY", "RINGCT", "UNLOCK HEIGHT", "SERVICE NODE WINNER", "EXTRA"]) {
+        assert.ok(!(label in initialFields), `Absent reward-transaction field should not occupy a row: ${label}`);
+      }
+      assert.ok(!initialDetail.sections.some((section) => section.title === "Extra"));
+      const zero = detailHarness(kind, HASH, { ...payloads.block, reward: 0, confirmations: 0 });
+      await zero.openBlock(867_181, false);
+      const zeroFields = fields(zero.observed.details[0]);
+      assert.equal(zeroFields["TOTAL BLOCK REWARD"], "0 JUDE");
+      assert.equal(zeroFields.CONFIRMATIONS, "0");
+      assert.equal(zero.observed.details[0].raw, "{}");
+
+      const minerTransaction = { ...payloads.block.minerTransaction, publicKey: "b".repeat(64),
+        serviceNodeWinner: "c".repeat(64), unlockHeight: 110, ringCtType: 2, extra: "010203", raw: { unlock_time: 110 } };
+      const rich = detailHarness(kind, HASH, { ...payloads.block, minerTransaction });
+      await rich.openBlock(867_181, false);
+      const richFields = fields(rich.observed.details[0]);
+      assert.equal(richFields["TRANSACTION PUBLIC KEY"], minerTransaction.publicKey);
+      assert.equal(richFields["SERVICE NODE WINNER"], minerTransaction.serviceNodeWinner);
+      assert.equal(richFields["UNLOCK HEIGHT"], "110");
+      assert.equal(richFields.RINGCT, "Yes / type 2");
+      assert.equal(richFields.EXTRA, "010203");
+      assert.equal(rich.observed.details[0].raw, JSON.stringify(minerTransaction.raw, null, 2));
+    }
   });
 }
 
@@ -170,11 +235,15 @@ for (const [marker, mode] of [
       const testModule = { exports: {} };
       vm.runInNewContext(compiled, {
         module: testModule,
-        serviceNodesOnly: false, statisticsOnly: false, pageSizePreferencesLoaded: ready,
+        serviceNodesOnly: false, statisticsOnly: false, overviewOnly: false, pageSizePreferencesLoaded: ready,
         snapshot: { network: { height: 100 } }, knownChainHeight: 101,
         snapshotParams: () => new URLSearchParams({ blockPageSize: "25" }),
+        fetchSnapshot: () => pending,
         fetchSnapshotWithRetry: (params) => { calls.push(params.toString()); return pending; },
-        fetch: (url) => { calls.push(url); return pending; },
+        fetchExplorerJson: (url) => { calls.push(url); return pending; },
+        LIVE_REQUEST_TIMEOUT_MS: 45_000,
+        TRANSACTION_POOL_REFRESH_DELAY_MS: 5_000,
+        AbortController,
         quorumPage: 0, quorumPageSize: 25, highestKnownHeightRef: { current: 101 },
         quorumRefreshRef: { current: null }, QUORUM_REFRESH_DELAY_MS: 5_000,
         URLSearchParams,

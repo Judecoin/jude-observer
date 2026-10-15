@@ -49,13 +49,66 @@ const jsonRpc = async (method, params = {}) => {
   if (!data.result) throw new Error("Invalid RPC response");
   return data.result;
 };
+
+// Reuse a range when scanStakeRange splits it to stay within its transaction
+// budget. Prefetch independent RPC batches with a small, bounded concurrency;
+// the scanner still validates every requested transaction before committing.
+let headerRange = [];
+const transactionRequests = new Map();
+const queuedBatches = [];
+let activeBatches = 0;
+function drainBatches() {
+  while (activeBatches < 4 && queuedBatches.length) {
+    const run = queuedBatches.shift();
+    activeBatches += 1;
+    run().finally(() => { activeBatches -= 1; drainBatches(); });
+  }
+}
+function prefetchTransactions(hashes) {
+  const missing = [...new Set(hashes)].filter((hash) => !transactionRequests.has(hash));
+  for (let offset = 0; offset < missing.length; offset += 100) {
+    const batch = missing.slice(offset, offset + 100);
+    let resolveBatch;
+    let rejectBatch;
+    const pending = new Promise((resolve, reject) => { resolveBatch = resolve; rejectBatch = reject; });
+    queuedBatches.push(async () => {
+      try {
+        const data = await request(source.node, "/get_transactions", {
+          txs_hashes: batch, decode_as_json: true, tx_extra: true, stake_info: true, prune: true,
+        });
+        if (!Array.isArray(data.txs)) throw new Error("Invalid transaction response");
+        resolveBatch(new Map(data.txs.map((tx) => [tx.tx_hash, {
+          tx_hash: tx.tx_hash, block_height: tx.block_height, in_pool: tx.in_pool, extra: tx.extra,
+        }])));
+      } catch (error) { rejectBatch(error); }
+    });
+    for (const hash of batch) {
+      const transaction = pending.then((transactions) => transactions.get(hash));
+      // A speculative batch may finish before its range is scanned; failures
+      // remain attached to the promise and are rethrown when the scanner reads.
+      transaction.catch(() => undefined);
+      transactionRequests.set(hash, transaction);
+    }
+  }
+  drainBatches();
+}
 const reader = {
-  headers: async (start, end) => (await jsonRpc("get_block_headers_range", {
-    start_height: start, end_height: end, get_tx_hashes: true,
-  })).headers,
-  transactions: async (hashes) => (await request(source.node, "/get_transactions", {
-    txs_hashes: hashes, decode_as_json: true, tx_extra: true, stake_info: true, prune: true,
-  })).txs,
+  headers: async (start, end) => {
+    let headers = headerRange.filter((header) => header.height >= start && header.height <= end);
+    if (headers.length !== end - start + 1) {
+      headers = (await jsonRpc("get_block_headers_range", {
+        start_height: start, end_height: end, get_tx_hashes: true, fill_pow_hash: false,
+      })).headers;
+      validateHeaders(headers, start, end);
+      headerRange = headers;
+    }
+    prefetchTransactions(headers.flatMap((header) => Array.isArray(header.tx_hashes) ? header.tx_hashes : []));
+    return headers;
+  },
+  transactions: async (hashes) => {
+    prefetchTransactions(hashes);
+    return (await Promise.all(hashes.map((hash) => transactionRequests.get(hash)))).filter(Boolean);
+  },
 };
 
 if (index.scannedHash) {

@@ -88,6 +88,7 @@ test("isolates quorum cache tips and fails over semantic RPC errors", async () =
     assert.equal(rpcCallsByNode.get("67.230.167.187"), 3);
 
     const callsBeforeInvalidRequests = rpcCalls;
+    const backgroundBeforeInvalidRequests = background.length;
     const futureResponse = await worker.fetch(new Request("http://localhost/api/quorums?page=0&pageSize=5&tip=100000001"), env, ctx);
     assert.equal(futureResponse.status, 400);
     const malformedResponse = await worker.fetch(new Request("http://localhost/api/quorums?page=0&pageSize=5&tip=101abc"), env, ctx);
@@ -99,7 +100,8 @@ test("isolates quorum cache tips and fails over semantic RPC errors", async () =
     const pagePastTipResponse = await worker.fetch(new Request("http://localhost/api/quorums?page=21&pageSize=5&tip=100"), env, ctx);
     assert.equal(pagePastTipResponse.status, 400);
     assert.equal(rpcCalls, callsBeforeInvalidRequests);
-    assert.equal(background.length, 0);
+    assert.equal(background.length, backgroundBeforeInvalidRequests, "Invalid requests must not schedule additional refresh or bootstrap work");
+    await Promise.all(background);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalCaches) Object.defineProperty(globalThis, "caches", originalCaches);

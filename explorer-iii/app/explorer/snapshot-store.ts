@@ -11,7 +11,7 @@ import {
 import {
   isNonNegativeInteger,
   isValidChainSnapshot,
-  sameChainSelection,
+  shouldAcceptChainSnapshot,
   isNewerHeightSnapshot,
   isValidNetworkPreview,
   isValidServiceNodesSnapshot,
@@ -66,10 +66,7 @@ function writeClientSnapshot(key: string, value: unknown) {
 export function rememberChainSnapshot(snapshot: ChainSnapshot) {
   if (isProvisionalSnapshot(snapshot)) return snapshot;
   if (!isValidChainSnapshot(snapshot)) return lastVerifiedChainSnapshot;
-  if (!lastVerifiedChainSnapshot || !sameChainSelection(lastVerifiedChainSnapshot, snapshot) || isNewerHeightSnapshot(
-    lastVerifiedChainSnapshot.network.height, lastVerifiedChainSnapshot.fetchedAt,
-    snapshot.network.height, snapshot.fetchedAt,
-  )) {
+  if (!lastVerifiedChainSnapshot || shouldAcceptChainSnapshot(lastVerifiedChainSnapshot, snapshot)) {
     lastVerifiedChainSnapshot = snapshot;
     writeClientSnapshot(CLIENT_CHAIN_SNAPSHOT_KEY, snapshot);
   }

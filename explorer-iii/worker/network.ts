@@ -28,6 +28,7 @@ export async function networkPreviewSnapshot() {
       height: topHeight,
       difficulty,
       targetSeconds,
+      targetVerified: Number.isInteger(info.target) && Number(info.target) > 0,
       hashrate: difficulty / targetSeconds,
       hardFork: Number(info.hard_fork || header.major_version),
       protocol: String(info.version || header.major_version),

@@ -1,12 +1,15 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import type {
   ChainSnapshot,
+  BlocksPageSnapshot,
+  TransactionsPageSnapshot,
   ServiceNodesLiveSnapshot,
   NetworkPreview,
   TransactionPoolSnapshot,
   QuorumSnapshot,
   Block,
   Transaction,
+  ExplorerBootstrap,
 } from "../explorer-types";
 import {
   lastVerifiedServiceNodesSnapshot,
@@ -41,34 +44,50 @@ import { useChainRefresh } from "./hooks/use-chain-refresh";
 import { useServiceNodeRefresh } from "./hooks/use-service-node-refresh";
 import { age, bytes, difficulty } from "./formatters";
 import { useDetails } from "./hooks/use-details";
+import { useLedgerRefresh } from "./hooks/use-ledger-refresh";
 
-export function useExplorer({ serviceNodesOnly = false, statisticsOnly = false }: { serviceNodesOnly?: boolean; statisticsOnly?: boolean }) {
+export function useExplorer({ serviceNodesOnly = false, statisticsOnly = false, blocksOnly = false, transactionsOnly = false, initialData }: { serviceNodesOnly?: boolean; statisticsOnly?: boolean; blocksOnly?: boolean; transactionsOnly?: boolean; initialData?: ExplorerBootstrap }) {
+  const ledgerOnly = blocksOnly || transactionsOnly;
+  const homeOnly = !serviceNodesOnly && !statisticsOnly && !ledgerOnly;
+  const ledger = useLedgerRefresh(blocksOnly ? "blocks" : transactionsOnly ? "transactions" : null, { initialData: blocksOnly ? initialData?.blocks : transactionsOnly ? initialData?.transactions : null, initialRequest: initialData?.ledgerRequest });
+  const homepageBlockLedger = useLedgerRefresh(homeOnly ? "blocks" : null, { scope: "home", initialData: initialData?.blocks });
+  const homepageTransactionLedger = useLedgerRefresh(homeOnly ? "transactions" : null, { scope: "home", initialData: initialData?.transactions });
+  const [hydrated, setHydrated] = useState(false);
+  // eslint-disable-next-line react-hooks/purity -- Live relative ages advance on refresh; the first hydration render uses its fixed SSR clock.
+  const displayNow = !hydrated && initialData?.renderedAt != null ? initialData.renderedAt : Date.now();
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Keep SSR and the first hydration render on the same request-local clock.
+    setHydrated(true);
+  }, []);
   const [query, setQuery] = useState("");
   const [serviceNodeQuery, setServiceNodeQuery] = useState("");
   const [message, setMessage] = useState("");
   const [searchLoading, setSearchLoading] = useState(false);
-  const [snapshot, setSnapshot] = useState<ChainSnapshot | null>(null);
-  const [serviceNodesLive, setServiceNodesLive] = useState<ServiceNodesLiveSnapshot | null>(() => lastVerifiedServiceNodesSnapshot);
-  const [networkPreview, setNetworkPreview] = useState<NetworkPreview | null>(() => lastVerifiedNetworkPreview);
-  const [transactionPoolSnapshot, setTransactionPoolSnapshot] = useState<TransactionPoolSnapshot | null>(null);
-  const [quorumLiveSnapshot, setQuorumLiveSnapshot] = useState<QuorumSnapshot | null>(() => lastVerifiedQuorumSnapshot);
-  const [connection, setConnection] = useState<"loading" | "live" | "offline">("loading");
+  const [snapshot, setSnapshot] = useState<ChainSnapshot | null>(() => initialData?.chain ?? null);
+  const [serviceNodesLive, setServiceNodesLive] = useState<ServiceNodesLiveSnapshot | null>(() => initialData?.serviceNodes ?? lastVerifiedServiceNodesSnapshot);
+  const [networkPreview, setNetworkPreview] = useState<NetworkPreview | null>(() => initialData?.network ?? lastVerifiedNetworkPreview);
+  const [transactionPoolSnapshot, setTransactionPoolSnapshot] = useState<TransactionPoolSnapshot | null>(() => initialData?.transactionPool ?? null);
+  const [quorumLiveSnapshot, setQuorumLiveSnapshot] = useState<QuorumSnapshot | null>(() => initialData?.quorums ?? lastVerifiedQuorumSnapshot);
+  const [connection, setConnection] = useState<"loading" | "live" | "offline">(() => initialData && Object.values(initialData).some((value) => value && typeof value === "object" && "live" in value && value.live === true) ? "live" : "loading");
   const [blockPage, setBlockPage] = useState(0);
   const [transactionPage, setTransactionPage] = useState(0);
-  const [quorumPage, setQuorumPage] = useState(0);
+  const [quorumPage, setQuorumPage] = useState(initialData?.quorums?.page ?? 0);
   const [serviceNodePage, setServiceNodePage] = useState(0);
+  const [homepageServiceNodePage, setHomepageServiceNodePage] = useState(0);
   const [deregisteredNodePage, setDeregisteredNodePage] = useState(0);
   const [deregisteredSnapshot, setDeregisteredSnapshot] = useState<DeregistrationSnapshot | null>(null);
-  const [blockPageSize, setBlockPageSize] = useState(5);
-  const [transactionPageSize, setTransactionPageSize] = useState(5);
-  const [quorumPageSize, setQuorumPageSize] = useState(5);
+  const [blockPageSize, setBlockPageSize] = useState(10);
+  const [transactionPageSize, setTransactionPageSize] = useState(10);
+  const [quorumPageSize, setQuorumPageSize] = useState(initialData?.quorums?.pageSize ?? 10);
   const [serviceNodePageSize, setServiceNodePageSize] = useState(50);
+  const [homepageServiceNodePageSize, setHomepageServiceNodePageSize] = useState(10);
   const [deregisteredNodePageSize, setDeregisteredNodePageSize] = useState(20);
-  const [pageSizePreferencesLoaded, setPageSizePreferencesLoaded] = useState(false);
+  const [pageSizePreferencesLoaded, setPageSizePreferencesLoaded] = useState(Boolean(initialData));
   const [quorumLoading, setQuorumLoading] = useState(false);
   const [lifecycleView, setLifecycleView] = useState<"unlocking" | "decommissioned" | "deregistered" | null>(null);
   const [lifecycleInitialized, setLifecycleInitialized] = useState(false);
-  const highestKnownHeightRef = useRef(0);
+  const highestKnownHeightRef = useRef(Math.max(initialData?.network?.network.height ?? 0, initialData?.chain?.network.height ?? 0, initialData?.serviceNodes?.height ?? 0, initialData?.blocks?.height ?? 0, initialData?.transactions?.height ?? 0));
+  const skipInitialPreferenceWriteRef = useRef(Boolean(initialData));
   const serviceNodeRefreshRef = useRef<(() => void) | null>(null);
   const quorumRefreshRef = useRef<(() => void) | null>(null);
   const knownChainHeight = Math.max(
@@ -88,13 +107,15 @@ export function useExplorer({ serviceNodesOnly = false, statisticsOnly = false }
     if (restoredQuorums) setQuorumLiveSnapshot((current) => current ?? restoredQuorums);
   }, []);
   const openSection = (section: "blocks" | "transactions" | "quorums") => {
-    if (serviceNodesOnly || statisticsOnly) {
+    closeDetail();
+    if (serviceNodesOnly || statisticsOnly || ledgerOnly) {
       window.location.assign(`/#${section}`);
       return;
     }
     const target = document.getElementById(section);
     if (target) {
-      target.scrollIntoView({ behavior: "smooth", block: "start" });
+      const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      target.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
       window.history.replaceState(null, "", `#${section}`);
     }
   };
@@ -103,42 +124,46 @@ export function useExplorer({ serviceNodesOnly = false, statisticsOnly = false }
     tip?: number,
   ) => {
     const params = new URLSearchParams({
-      blockPage: String(overrides.blockPage ?? blockPage), blockPageSize: String(overrides.blockPageSize ?? blockPageSize),
-      transactionPage: String(overrides.transactionPage ?? transactionPage), transactionPageSize: String(overrides.transactionPageSize ?? transactionPageSize),
-      quorumPage: String(overrides.quorumPage ?? quorumPage), quorumPageSize: String(overrides.quorumPageSize ?? quorumPageSize),
+      blockPage: String(homeOnly ? 0 : overrides.blockPage ?? blockPage), blockPageSize: String(homeOnly ? 10 : overrides.blockPageSize ?? blockPageSize),
+      transactionPage: String(homeOnly ? 0 : overrides.transactionPage ?? transactionPage), transactionPageSize: String(homeOnly ? 10 : overrides.transactionPageSize ?? transactionPageSize),
     });
-    if (Number.isInteger(tip) && Number(tip) >= 0) params.set("tip", String(tip));
+    const minimumHeight = tip ?? knownChainHeight;
+    if (minimumHeight > 0) params.set("tip", String(minimumHeight));
     return params;
   };
   const prefetchSnapshot = (overrides: Parameters<typeof snapshotParams>[0]) => {
+    // Quorums have their own verified endpoint and must not rebuild the chain.
+    if (overrides?.quorumPage != null || overrides?.quorumPageSize != null) return;
     void fetchSnapshot(snapshotParams(overrides, knownChainHeight)).catch(() => undefined);
   };
   useDeregistrationRefresh({ statisticsOnly, setDeregisteredSnapshot, knownChainHeight });
   useNetworkRefresh({ setConnection, highestKnownHeightRef, setNetworkPreview, serviceNodeRefreshRef, quorumRefreshRef });
-  useQuorumRefresh({ serviceNodesOnly, statisticsOnly, pageSizePreferencesLoaded, quorumPage, quorumPageSize, highestKnownHeightRef, setQuorumLiveSnapshot, setQuorumLoading, quorumRefreshRef });
-  usePoolRefresh({ serviceNodesOnly, setTransactionPoolSnapshot });
-  useChainRefresh({ serviceNodesOnly, pageSizePreferencesLoaded, snapshotParams, highestKnownHeightRef, setSnapshot, setServiceNodesLive, setConnection, setQuorumLoading, blockPage, blockPageSize, transactionPage, transactionPageSize, quorumPage, quorumPageSize, snapshot, knownChainHeight });
+  useQuorumRefresh({ serviceNodesOnly: serviceNodesOnly || ledgerOnly, statisticsOnly, pageSizePreferencesLoaded, quorumPage, quorumPageSize, highestKnownHeightRef, setQuorumLiveSnapshot, setQuorumLoading, quorumRefreshRef });
+  usePoolRefresh({ serviceNodesOnly: serviceNodesOnly || ledgerOnly, setTransactionPoolSnapshot });
+  useChainRefresh({ serviceNodesOnly: serviceNodesOnly || ledgerOnly, pageSizePreferencesLoaded, snapshotParams, highestKnownHeightRef, setSnapshot, setServiceNodesLive, setConnection, blockPage: homeOnly ? 0 : blockPage, blockPageSize: homeOnly ? 10 : blockPageSize, transactionPage: homeOnly ? 0 : transactionPage, transactionPageSize: homeOnly ? 10 : transactionPageSize, snapshot, knownChainHeight, successPollDelayMs: homeOnly ? 30_000 : undefined, overviewOnly: homeOnly });
 
-  useServiceNodeRefresh({ highestKnownHeightRef, setServiceNodesLive, serviceNodeRefreshRef });
+  useServiceNodeRefresh({ enabled: !ledgerOnly, highestKnownHeightRef, setServiceNodesLive, serviceNodeRefreshRef });
 
   useEffect(() => {
+    if (initialData) return;
     try {
-      const saved = window.localStorage.getItem("jude-explorer-page-sizes");
+      const saved = window.localStorage.getItem("jude-explorer-page-sizes:v3");
       // eslint-disable-next-line react-hooks/set-state-in-effect -- Browser preferences are unavailable during server rendering.
       if (!saved) { setPageSizePreferencesLoaded(true); return; }
       const sizes = JSON.parse(saved) as Record<string, number>;
-      const valid = (value: number | undefined) => PAGE_SIZE_OPTIONS.includes(value as typeof PAGE_SIZE_OPTIONS[number]) ? value! : 5;
+      const valid = (value: number | undefined) => PAGE_SIZE_OPTIONS.includes(value as typeof PAGE_SIZE_OPTIONS[number]) ? value! : 10;
       setBlockPageSize(valid(sizes.blocks));
       setTransactionPageSize(valid(sizes.transactions));
       setQuorumPageSize(valid(sizes.quorums));
     } catch { /* Ignore invalid or unavailable saved page sizes. */ }
     setPageSizePreferencesLoaded(true);
-  }, []);
+  }, [initialData]);
 
   useEffect(() => {
     if (!pageSizePreferencesLoaded) return;
+    if (skipInitialPreferenceWriteRef.current) { skipInitialPreferenceWriteRef.current = false; return; }
     try {
-      window.localStorage.setItem("jude-explorer-page-sizes", JSON.stringify({
+      window.localStorage.setItem("jude-explorer-page-sizes:v3", JSON.stringify({
         blocks: blockPageSize, transactions: transactionPageSize,
         quorums: quorumPageSize,
       }));
@@ -146,22 +171,20 @@ export function useExplorer({ serviceNodesOnly = false, statisticsOnly = false }
   }, [pageSizePreferencesLoaded, blockPageSize, transactionPageSize, quorumPageSize]);
 
   useEffect(() => {
-    if (!pageSizePreferencesLoaded || serviceNodesOnly) return;
+    if (!pageSizePreferencesLoaded || serviceNodesOnly || ledgerOnly) return;
     const restored = readClientSnapshot(CLIENT_CHAIN_SNAPSHOT_KEY, isValidChainSnapshot);
     if (!restored) return;
     const matchesSelection = restored.pagination.blockPage === blockPage
       && restored.pagination.transactionPage === transactionPage
       && restored.pagination.pageSize === blockPageSize
-      && restored.pagination.transactionScanSize === Math.max(160, transactionPageSize * 32)
-      && restored.quorums.page === quorumPage
-      && restored.quorums.pageSize === quorumPageSize;
+      && restored.pagination.transactionScanSize === Math.max(160, transactionPageSize * 32);
     if (!matchesSelection) return;
     const accepted = rememberChainSnapshot(restored);
     if (!accepted) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- Restore only the verified browser snapshot matching the current selection.
     setSnapshot((current) => current ?? accepted);
-  }, [pageSizePreferencesLoaded, serviceNodesOnly, blockPage, transactionPage, quorumPage,
-    blockPageSize, transactionPageSize, quorumPageSize]);
+  }, [pageSizePreferencesLoaded, serviceNodesOnly, ledgerOnly, blockPage, transactionPage,
+    blockPageSize, transactionPageSize]);
   const changeQuorumPage = (nextPage: number) => {
     if (quorumLoading || nextPage < 0) return;
     setQuorumLoading(true);
@@ -178,7 +201,7 @@ export function useExplorer({ serviceNodesOnly = false, statisticsOnly = false }
     && snapshot.pagination.transactionScanSize === Math.max(160, transactionPageSize * 32);
   const blocks: Block[] = snapshot && blocksSelectionMatches ? snapshot.blocks.map((block) => ({
     height: block.height,
-    age: age(block.timestamp),
+    age: age(block.timestamp, displayNow),
     hash: block.hash,
     txs: block.txs,
     size: bytes(block.size),
@@ -190,7 +213,7 @@ export function useExplorer({ serviceNodesOnly = false, statisticsOnly = false }
   })) : [];
   const transactions: Transaction[] = snapshot && transactionsSelectionMatches ? snapshot.transactions.map((tx) => ({
     hash: tx.hash,
-    age: age(tx.timestamp),
+    age: age(tx.timestamp, displayNow),
     block: tx.block,
     size: bytes(tx.size),
     confirmations: tx.confirmations,
@@ -200,16 +223,22 @@ export function useExplorer({ serviceNodesOnly = false, statisticsOnly = false }
     outputs: tx.outputs,
     txType: tx.txType,
   })) : [];
-  const particles = useMemo(() => Array.from({ length: 24 }, (_, i) => i), []);
   const liveNetwork = !networkPreview
     ? snapshot?.network ?? null
     : !snapshot || (isProvisionalSnapshot(snapshot) && !isProvisionalSnapshot(networkPreview)) || (
       isProvisionalSnapshot(snapshot) === isProvisionalSnapshot(networkPreview) && isNewerHeightSnapshot(
       snapshot.network.height, snapshot.fetchedAt, networkPreview.network.height, networkPreview.fetchedAt,
     )) ? networkPreview.network : snapshot.network;
+  const homepageBlocks: Block[] = ((homepageBlockLedger.data as BlocksPageSnapshot | null)?.rows ?? []).map((block) => ({
+    ...block, age: age(block.timestamp, displayNow), size: bytes(block.size), difficulty: difficulty(block.difficulty),
+  }));
+  const homepageTransactions: Transaction[] = ((homepageTransactionLedger.data as TransactionsPageSnapshot | null)?.rows ?? []).map((tx) => ({
+    ...tx, age: age(tx.timestamp, displayNow), size: bytes(tx.size),
+    confirmations: Math.max(tx.confirmations, (liveNetwork?.height ?? homepageTransactionLedger.data!.height) - tx.block + 1),
+  }));
   const transactionPool = transactionPoolSnapshot
     ?? (snapshot?.transactionPool.available ? snapshot.transactionPool : null);
-  const chainServiceNodesSnapshot: ServiceNodesLiveSnapshot | null = snapshot ? {
+  const chainServiceNodesSnapshot: ServiceNodesLiveSnapshot | null = snapshot?.serviceNodes && snapshot.serviceNodesHeight != null ? {
     live: snapshot.live,
     fetchedAt: snapshot.fetchedAt,
     height: snapshot.serviceNodesHeight,
@@ -252,7 +281,7 @@ export function useExplorer({ serviceNodesOnly = false, statisticsOnly = false }
   const deregisteredTotal = displayedDeregistration?.total ?? null;
   const deregisteredIndexedThrough = displayedDeregistration?.indexedThrough ?? null;
   const lockedDeregisteredServiceNodeTotal = serviceNodes
-    ? deregisteredNodes.filter((node) => node.unlockedAt > serviceNodeHeight).length
+    ? deregisteredNodes.filter((node) => node.unlockedAt > serviceNodeHeight && node.unlockHeightVerified === true).length
     : 0;
   const statusTotal = currentServiceNodeTotal + lockedDeregisteredServiceNodeTotal;
   const awaitingServiceNodeRows = Array.isArray(serviceNodes?.awaitingNodes)
@@ -288,12 +317,18 @@ export function useExplorer({ serviceNodesOnly = false, statisticsOnly = false }
     () => filteredServiceNodes.slice(serviceNodePage * serviceNodePageSize, (serviceNodePage + 1) * serviceNodePageSize),
     [filteredServiceNodes, serviceNodePage, serviceNodePageSize],
   );
+  const homepageServiceNodeLastPage = Math.max(0, Math.ceil((serviceNodes?.nodes.length ?? 0) / homepageServiceNodePageSize) - 1);
   const homepageServiceNodes = useMemo(
     () => [...(serviceNodes?.nodes || [])]
       .sort((a, b) => b.lastRewardAt - a.lastRewardAt || b.registeredAt - a.registeredAt || a.publicKey.localeCompare(b.publicKey))
-      .slice(0, 5),
-    [serviceNodes],
+      .slice(homepageServiceNodePage * homepageServiceNodePageSize, (homepageServiceNodePage + 1) * homepageServiceNodePageSize),
+    [serviceNodes, homepageServiceNodePage, homepageServiceNodePageSize],
   );
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Clamp the homepage page when the live node list shrinks.
+    if (homepageServiceNodePage > homepageServiceNodeLastPage) setHomepageServiceNodePage(homepageServiceNodeLastPage);
+  }, [homepageServiceNodePage, homepageServiceNodeLastPage]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- Clamp the current page when the live list shrinks.
@@ -317,7 +352,7 @@ export function useExplorer({ serviceNodesOnly = false, statisticsOnly = false }
     else if (serviceNodes.decommissioned > 0) setLifecycleView("decommissioned");
     setLifecycleInitialized(true);
   }, [statisticsOnly, serviceNodes, lifecycleInitialized]);
-  const { detail, detailPending, detailRenderKey, detailBackdropRef, openBlock, openTransaction, openServiceNode, closeDetail, search } = useDetails({ liveNetwork, serviceNodeHeight, query, setMessage, setSearchLoading });
+  const { detail, detailPending, detailRenderKey, detailBackdropRef, openBlock, openTransaction, openServiceNode, closeDetail, search } = useDetails({ liveNetwork, serviceNodeHeight, query, setMessage, setSearchLoading, searchScope: blocksOnly ? "block" : transactionsOnly ? "transaction" : undefined });
 
-  return { particles, serviceNodesOnly, statisticsOnly, openSection, search, query, setQuery, searchLoading, message, connection, liveNetwork, serviceNodes, transactionPool, openTransaction, blockPage, blockPageSize, setBlockPage, setBlockPageSize, prefetchSnapshot, blocks, openBlock, snapshot, blocksSelectionMatches, transactionPage, transactionPageSize, setTransactionPage, setTransactionPageSize, transactions, transactionsSelectionMatches, activeEnd, awaitingEnd, offlineEnd, statusTotal, activeServiceNodes, unlockingServiceNodes, awaitingServiceNodes, decommissionedServiceNodes, lockedDeregisteredServiceNodeTotal, currentServiceNodeTotal, stakingRatio, stakingRatioWidth, minedSupply, setLifecycleView, lifecycleView, setDeregisteredNodePage, deregisteredTotal, deregisteredIndexedThrough, deregisteredNodes, deregisteredNodePage, deregisteredNodeLastPage, deregisteredNodePageSize, setDeregisteredNodePageSize, serviceNodeHeight, openServiceNode, paginatedDeregisteredNodes, serviceNodeQuery, setServiceNodeQuery, setServiceNodePage, filteredServiceNodes, awaitingServiceNodeRows, paginatedServiceNodes, serviceNodePage, serviceNodeLastPage, serviceNodePageSize, setServiceNodePageSize, latestQuorum, quorumPage, quorums, quorumPageSize, quorumLoading, changeQuorumPage, changeQuorumPageSize, homepageServiceNodes, detailPending, closeDetail, detail, detailBackdropRef, detailRenderKey };
+  return { displayNow, serviceNodesOnly, statisticsOnly, blocksOnly, transactionsOnly, ledger, homepageBlockLedger, homepageTransactionLedger, homepageBlocks, homepageTransactions, homepageServiceNodePage, homepageServiceNodePageSize, homepageServiceNodeLastPage, setHomepageServiceNodePage, setHomepageServiceNodePageSize, openSection, search, query, setQuery, searchLoading, message, connection, liveNetwork, serviceNodes, transactionPool, openTransaction, blockPage, blockPageSize, setBlockPage, setBlockPageSize, prefetchSnapshot, blocks, openBlock, snapshot, blocksSelectionMatches, transactionPage, transactionPageSize, setTransactionPage, setTransactionPageSize, transactions, transactionsSelectionMatches, activeEnd, awaitingEnd, offlineEnd, statusTotal, activeServiceNodes, unlockingServiceNodes, awaitingServiceNodes, decommissionedServiceNodes, lockedDeregisteredServiceNodeTotal, currentServiceNodeTotal, stakingRatio, stakingRatioWidth, minedSupply, setLifecycleView, lifecycleView, setDeregisteredNodePage, deregisteredTotal, deregisteredIndexedThrough, deregisteredNodes, deregisteredNodePage, deregisteredNodeLastPage, deregisteredNodePageSize, setDeregisteredNodePageSize, serviceNodeHeight, openServiceNode, paginatedDeregisteredNodes, serviceNodeQuery, setServiceNodeQuery, setServiceNodePage, filteredServiceNodes, awaitingServiceNodeRows, paginatedServiceNodes, serviceNodePage, serviceNodeLastPage, serviceNodePageSize, setServiceNodePageSize, latestQuorum, quorumPage, quorums, quorumPageSize, quorumLoading, changeQuorumPage, changeQuorumPageSize, homepageServiceNodes, detailPending, closeDetail, detail, detailBackdropRef, detailRenderKey };
 }

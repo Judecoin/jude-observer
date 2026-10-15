@@ -9,8 +9,10 @@ export type StakeIndex = {
 export type DeregisteredNode = {
   publicKey: string;
   registeredAt: number;
+  // Legacy field name: this is the scheduled stake unlock height, not a timestamp.
   unlockedAt: number;
   contributions: number;
+  unlockHeightVerified?: boolean;
 };
 
 export type DeregistrationSnapshot = {
@@ -120,7 +122,7 @@ export function resolveDeregisteredNodes(index: StakeIndex, blacklist: Blacklist
     const registeredAt = stake ? index.registrations[stake.publicKey] : 0;
     if (!stake || !registeredAt) { unresolvedKeyImages += 1; continue; }
     const node = byNode.get(stake.publicKey) || {
-      publicKey: stake.publicKey, registeredAt, unlockedAt: 0, contributions: 0,
+      publicKey: stake.publicKey, registeredAt, unlockedAt: 0, contributions: 0, unlockHeightVerified: true,
     };
     node.unlockedAt = Math.max(node.unlockedAt, entry.unlock_height);
     node.contributions += 1;
@@ -156,13 +158,17 @@ export function createDeregistrationTracker(seed: StakeIndex, open: () => Promis
         if (headers[0].hash !== index.scannedHash) { index = copyIndex(seed); history.clear(); }
       }
       const blacklist = await reader.blacklist();
-      
-      for (let chunk = 0; chunk < 4 && index.scannedThrough < reader.height; chunk += 1) {
+      let resolved = resolveDeregisteredNodes(index, blacklist, reader.height);
+      // A fresh blacklist already verifies the complete current lock set when
+      // every key image has a known stake mapping. Do not scan unrelated blocks
+      // before serving these records; catch up only to resolve unknown stakes.
+      for (let chunk = 0; chunk < 4 && resolved.unresolvedKeyImages > 0 && index.scannedThrough < reader.height; chunk += 1) {
         try {
           index = await scanStakeRange(index, reader, Math.min(reader.height, index.scannedThrough + HEADER_CHUNK));
+          resolved = resolveDeregisteredNodes(index, blacklist, reader.height);
         } catch { break; }
       }
-      const { nodes, unresolvedKeyImages } = resolveDeregisteredNodes(index, blacklist, reader.height);
+      const { nodes, unresolvedKeyImages } = resolved;
       for (const node of nodes) history.set(node.publicKey, node);
       await storage?.save({ index, history: [...history.values()] }).catch(() => undefined);
       return {

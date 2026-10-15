@@ -59,3 +59,7 @@ export const MAX_QUORUM_TIP = 100_000_000;
 export const RPC_CACHE_MAX_ENTRIES = 200;
 
 export const RPC_CACHE_TTL_MS = 3_000;
+
+// Give the recently successful node a head start without making every reader
+// wait for its full timeout before another public node is tried.
+export const RPC_FAILOVER_DELAY_MS = 350;

@@ -1,18 +1,45 @@
 import { readProductionSource } from "./helpers/production-source.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import test from "node:test";
+import vm from "node:vm";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
 
-async function render(path = "/") {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}-${Math.random()}`);
-  const { default: worker } = await import(workerUrl.href);
-  return worker.fetch(
-    new Request(`http://localhost${path}`, { headers: { accept: "text/html" } }),
-    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
-    { waitUntil() {}, passThroughOnException() {} },
-  );
+async function render(path = "/", { cacheEntries = [], onUpstreamFetch } = {}) {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = Object.getOwnPropertyDescriptor(globalThis, "caches");
+  const cache = new Map(cacheEntries);
+  const jobs = [];
+  const key = (request) => typeof request === "string" ? request : request.url;
+  globalThis.fetch = async (...args) => {
+    onUpstreamFetch?.(...args);
+    throw new Error("Upstream unavailable in the isolated SSR fixture");
+  };
+  Object.defineProperty(globalThis, "caches", { configurable: true, value: { default: {
+    async match(request) { return cache.get(key(request))?.clone(); },
+    async put(request, response) { cache.set(key(request), response.clone()); },
+  } } });
+  try {
+    const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+    workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}-${Math.random()}`);
+    const { default: worker } = await import(workerUrl.href);
+    const response = await worker.fetch(
+      new Request(`http://localhost${path}`, { headers: { accept: "text/html" } }),
+      { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
+      { waitUntil(job) { jobs.push(job); }, passThroughOnException() {} },
+    );
+    // Finish streamed SSR while the request's upstream/cache fixtures are active.
+    const body = await response.arrayBuffer();
+    await Promise.allSettled(jobs);
+    return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalCaches) Object.defineProperty(globalThis, "caches", originalCaches);
+    else delete globalThis.caches;
+  }
 }
 
 function visibleText(html) {
@@ -37,33 +64,231 @@ function sourceEffectContaining(source, marker) {
   return source.slice(start, nextEffect >= 0 ? nextEffect : source.length);
 }
 
+function cssRules(css) {
+  const source = css.replace(/\/\*[\s\S]*?\*\//g, "").replace(/@(?:import|charset)\s[^;]*;/g, "");
+  return [...source.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .map((match) => ({ selectors: match[1].split(",").map((part) => part.trim()), declarations: match[2] }));
+}
+
+function cssDeclarations(css, selector) {
+  return cssRules(css)
+    .filter((rule) => rule.selectors.includes(selector))
+    .map((rule) => rule.declarations).join(";");
+}
+
+function cssProperty(css, selector, property) {
+  const declarations = cssDeclarations(css, selector);
+  const values = [...declarations.matchAll(new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]+)`, "g"))];
+  const important = values.filter((match) => /!important\s*$/.test(match[1]));
+  return (important.at(-1) ?? values.at(-1))?.[1].trim().replace(/!important$/, "").trim() ?? null;
+}
+
+function assertNoHiddenColumnRules(css, classes) {
+  for (const rule of cssRules(css)) {
+    if (!/(?:^|;)\s*display\s*:\s*none(?:\s*!important)?\s*(?:;|$)/.test(rule.declarations)) continue;
+    for (const selector of rule.selectors) {
+      // Removing a generated label does not remove its real ledger field.
+      if (/::?(?:before|after)\b/.test(selector)) continue;
+      const isColumn = selector.includes(":nth-child") && classes.some((className) => selector.includes(`.${className}`));
+      assert.equal(isColumn, false, `Ledger columns must remain visible: ${selector}`);
+    }
+  }
+}
+
+function firstHeading(html) {
+  const heading = html.match(/<h1\b[^>]*>[\s\S]*?<\/h1>/i);
+  assert.ok(heading, "Missing page title");
+  return visibleText(heading[0]);
+}
+
+function sectionContainingId(html, id) {
+  const marker = html.indexOf(`id="${id}"`);
+  assert.ok(marker >= 0, `Missing section anchor: ${id}`);
+  const start = html.lastIndexOf("<section", marker);
+  assert.ok(start >= 0, `Missing section around: ${id}`);
+  let depth = 0;
+  for (const tag of html.slice(start).matchAll(/<\/?section\b[^>]*>/g)) {
+    depth += tag[0].startsWith("</") ? -1 : 1;
+    if (depth === 0) return html.slice(start, start + tag.index + tag[0].length);
+  }
+  assert.fail(`Unclosed section: ${id}`);
+}
+
+const fixtureHash = (value) => BigInt(value).toString(16).padStart(64, "0");
+const fixtureCursor = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+const bootstrapKey = (kind, params = {}) => {
+  const url = new URL(`/__explorer-bootstrap/v1/${kind}`, "http://localhost");
+  url.search = new URLSearchParams(params).toString();
+  return url.href;
+};
+
+function firstRenderFixture() {
+  const height = 900;
+  const timestamp = Math.floor(Date.now() / 1000) - 20;
+  const common = { live: true, fetchedAt: new Date().toISOString(), source: "Judecoin mainnet fixture", node: "https://node.fixture" };
+  const anchorHash = fixtureHash(10_000 + height);
+  const nodes = Array.from({ length: 12 }, (_, index) => ({
+    publicKey: fixtureHash(30_000 + index), active: true, funded: true,
+    contributed: 23_600_000_000_000, requirement: 23_600_000_000_000,
+    registeredAt: height - 100 - index, lastRewardAt: height - index, lastUptimeProof: timestamp,
+    version: "3.2.0", unlocking: false, unlockAt: 0, contributors: 1, maxContributors: 4, operatorFee: 0,
+  }));
+  const serviceNodes = { ...common, height, serviceNodes: {
+    total: nodes.length, active: nodes.length, funded: nodes.length, exiting: 0, decommissioned: 0,
+    stakingRequirement: 23_600_000_000_000, totalContributed: nodes.length * 23_600_000_000_000,
+    page: 0, pageSize: nodes.length, nodes, awaitingNodes: [], unlockingNodes: [], decommissionedNodes: [],
+  } };
+  const network = { ...common, network: {
+    height, difficulty: 1_000, targetSeconds: 180, targetVerified: true, hashrate: 10,
+    hardFork: 17, protocol: "3.2.0", txPoolSize: 0, blockSizeMedian: 400, blockSizeLimit: 200_000,
+    coinbase: null, fees: null, minedSupply: 40_000_000_000_000_000, supplyHeight: height, supplySource: "fixture",
+    latestBlockTimestamp: timestamp, latestBlockAgeSeconds: 20, synced: true,
+  } };
+  const quorums = { ...common, height, type: "Service Node Testing", quorumType: 0, trusted: true,
+    page: 0, pageSize: 10, hasOlder: true, truncated: false,
+    records: [{ height, validators: [nodes[0].publicKey], workers: [nodes[1].publicKey] }], unavailable: [],
+  };
+  const transactionPool = { available: true, fetchedAt: common.fetchedAt, count: 0, totalBytes: 0, transactions: [] };
+  const cursor = (kind, pageSize, position) => fixtureCursor({
+    version: kind === "transactions" ? 2 : 1, kind, anchorHeight: height, anchorHash,
+    nextHeight: height - position, offset: 0,
+    ...(kind === "transactions" ? { pageSize, position, totalRecords: 180 } : {}),
+  });
+  const ledger = (kind, pageSize, position = 0) => {
+    const totalRecords = kind === "blocks" ? height + 1 : 180;
+    const rows = Array.from({ length: Math.min(pageSize, totalRecords - position) }, (_, index) => {
+      const rowHeight = height - position - index;
+      return kind === "blocks" ? {
+        height: rowHeight, timestamp: timestamp - (position + index) * 180,
+        hash: fixtureHash(10_000 + rowHeight), txs: 1, size: 400, difficulty: 1_000,
+        fee: 0, reward: 8_960_000_000, inputs: 0, outputs: 2,
+      } : {
+        hash: fixtureHash(20_000 + position + index), block: rowHeight,
+        timestamp: timestamp - (position + index) * 180, size: 200, confirmations: position + index + 1,
+        fee: 0, reward: 0, inputs: 2, outputs: 2, txType: "transfer",
+      };
+    });
+    const hasMore = position + rows.length < totalRecords;
+    return { ...common, height, anchorHeight: height, anchorHash, pageSize, rows,
+      nextCursor: hasMore ? cursor(kind, pageSize, position + rows.length) : null, hasMore,
+      scannedBlocks: rows.length, scanLimited: false, totalRecords, position,
+    };
+  };
+  const blocks = ledger("blocks", 10);
+  const transactions = ledger("transactions", 10);
+  const chain = { ...network, blocks: blocks.rows, transactions: transactions.rows, transactionPool,
+    pagination: { blockPage: 0, transactionPage: 0, pageSize: 10, transactionScanSize: 320 },
+    serviceNodesHeight: height, serviceNodes: serviceNodes.serviceNodes, quorums,
+  };
+  const homeEntries = () => [
+    [bootstrapKey("network"), network], [bootstrapKey("serviceNodes"), serviceNodes],
+    [bootstrapKey("quorums", { pageSize: "10", latest: "1" }), quorums],
+    [bootstrapKey("transactionPool"), transactionPool],
+    [bootstrapKey("chain", { blockPage: "0", transactionPage: "0", blockPageSize: "10", transactionPageSize: "10" }), chain],
+    [bootstrapKey("blocks", { pageSize: "10" }), blocks], [bootstrapKey("transactions", { pageSize: "10" }), transactions],
+  ].map(([key, data]) => [key, Response.json(data)]);
+  return { height, nodes, network, ledger, cursor, homeEntries };
+}
+
+test("the built worker renders warm mainnet data in the first homepage HTML before JavaScript", async () => {
+  const fixture = firstRenderFixture();
+  const fetches = [];
+  const response = await render("/", { cacheEntries: fixture.homeEntries(), onUpstreamFetch: (url) => fetches.push(String(url)) });
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  const blocks = sectionContainingId(html, "blocks");
+  const transactions = sectionContainingId(html, "transactions");
+  const nodes = sectionContainingId(html, "home-service-nodes");
+  assert.equal((blocks.match(/class="table-row block-row-link"/g) || []).length, 10);
+  assert.equal((transactions.match(/class="table-row transaction-row-link"/g) || []).length, 10);
+  assert.equal((nodes.match(/class="table-row service-node-row-link notranslate"/g) || []).length, 10);
+  assert.match(blocks, /aria-label="Blocks page 1 of 91"/);
+  assert.match(transactions, /aria-label="Transactions page 1 of 18"/);
+  assert.ok(nodes.includes(fixture.nodes[0].publicKey));
+  assert.ok(visibleText(html).includes(`CHAIN HEIGHT ${fixture.height}`));
+  assert.doesNotMatch(visibleText(html), /Fetching|Awaiting service node data|Awaiting quorum records|Loading…/i);
+  assert.deepEqual(fetches, [], "Fresh verified component caches must satisfy the initial render without RPC");
+});
+
+test("the built worker seeds standalone ledgers at 50 rows and honors each cursor and page-size query", async () => {
+  for (const kind of ["blocks", "transactions"]) {
+    for (const [pageSize, position] of [[50, 0], [20, 20]]) {
+      const fixture = firstRenderFixture();
+      const cursor = position ? fixture.cursor(kind, pageSize, position) : null;
+      const params = { pageSize: String(pageSize), ...(cursor ? { cursor } : {}) };
+      const data = fixture.ledger(kind, pageSize, position);
+      const cacheEntries = [
+        [bootstrapKey("network"), Response.json(fixture.network)],
+        [bootstrapKey(kind, params), Response.json(data)],
+      ];
+      const query = position ? `?${new URLSearchParams({ ...params, page: "2" })}` : "";
+      const fetches = [];
+      const response = await render(`/${kind}${query}`, { cacheEntries, onUpstreamFetch: (url) => fetches.push(String(url)) });
+      assert.equal(response.status, 200);
+      const html = await response.text();
+      const rowClass = kind === "blocks" ? "block" : "transaction";
+      assert.equal((html.match(new RegExp(`class="table-row ${rowClass}-row-link"`, "g")) || []).length, pageSize);
+      const label = kind === "blocks" ? "Blocks" : "Transactions";
+      assert.ok(html.includes(`aria-label="${label} page ${position / pageSize + 1} of ${Math.ceil(data.totalRecords / pageSize)}"`));
+      assert.ok(html.includes(`<option value="${pageSize}" selected="">${pageSize}</option>`));
+      assert.ok(html.includes(data.rows[0].hash));
+      assert.doesNotMatch(visibleText(html), /Fetching|Loading…|Unavailable/i);
+      assert.deepEqual(fetches, [], `${kind} must read the component cache for its requested cursor and page size`);
+    }
+  }
+});
+
 test("server-renders the English-only release explorer", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   const html = await response.text();
   assert.match(html, /<title>Judecoin Blockchain Explorer<\/title>/i);
-  assert.match(html, /See the chain/);
+  assert.equal(firstHeading(html), "Judecoin Blockchain Explorer");
   assert.match(html, /Latest Blocks/);
   assert.match(html, /Latest Transactions/);
   assert.match(html, /Service Node Testing Quorums/);
   assert.match(html, /Latest Service Nodes/);
-  assert.match(html, /class="quorum-bottom-pager"/);
+  assert.equal((html.match(/class="table-pagination"/g) || []).length, 4);
+  assert.doesNotMatch(html, /class="quorum-bottom-pager"/);
   assert.doesNotMatch(html, /class="language-toggle"/);
   assert.doesNotMatch(html, />中文<\/button>/);
   assert.match(html, /Page 1 of 1/);
-  assert.match(html, /<option value="5" selected="">5<\/option>/);
+  assert.equal((html.match(/<option value="10" selected="">10<\/option>/g) || []).length, 4);
+  for (const id of ["blocks", "transactions", "home-service-nodes", "quorums"]) {
+    const section = sectionContainingId(html, id);
+    assert.equal((section.match(/class="table-pagination"/g) || []).length, 1, `${id} needs its own pagination`);
+    assert.equal((section.match(/<option value="10" selected="">10<\/option>/g) || []).length, 1, `${id} defaults to 10 rows`);
+    assert.match(section, /aria-label="Previous (?:blocks |transactions )?page"/i);
+    assert.match(section, /aria-label="Next (?:blocks |transactions )?page"/i);
+    assert.match(section, /aria-label="(?:Blocks |Transactions )?Rows per page"/i);
+  }
   assert.doesNotMatch(html, />5<!-- --> rows<\/option>/);
-  assert.match(html, /href="\/service-nodes">Service Nodes/);
-  assert.match(html, /href="\/statistics">Statistics/);
+  assert.match(html, /href="\/service-nodes"[^>]*aria-label="Service Nodes"/);
+  assert.match(html, /href="\/statistics"[^>]*aria-label="Statistics"/);
 });
 
-test("server-renders all three routes with numeric zero states and no visible loading placeholders", async () => {
+test("standalone block and transaction routes provide dedicated searchable ledgers", async () => {
+  for (const [path, title, tableClass] of [["/blocks", "Blocks", "blocks-table"], ["/transactions", "Transactions", "tx-table"]]) {
+    const response = await render(path);
+    assert.equal(response.status, 200, path);
+    const html = await response.text();
+    assert.equal(firstHeading(html), title, path);
+    assert.match(html, new RegExp(`href="${path}"[^>]*aria-current="page"`));
+    assert.match(html, /role="search"/);
+    assert.match(html, new RegExp(tableClass));
+    assert.match(html, /Rows per page/i);
+    assert.equal((html.match(/<option value="50" selected="">50<\/option>/g) || []).length, 1, `${path} defaults to 50 rows`);
+    assert.doesNotMatch(html, /Service Node Testing Quorums|Latest Service Nodes/);
+  }
+});
+
+test("server-renders all three routes with honest empty states and no fabricated loading metrics", async () => {
   for (const path of ["/", "/service-nodes", "/statistics"]) {
     const response = await render(path);
     assert.equal(response.status, 200, path);
     const html = await response.text();
     const text = visibleText(html);
-    assert.doesNotMatch(text, /\bloading\b|\bN\/A\b|—/i, path);
+    assert.doesNotMatch(text, /\bloading\b|\bN\/A\b|NaN|Infinity/i, path);
     assert.match(text, /\b0\b/, path);
   }
 });
@@ -89,8 +314,10 @@ test("adds live Awaiting Contributions without a permanent loading panel", async
   assert.match(worker, /awaitingNodes: mapAwaitingServiceNodes\(currentServiceNodeStates\)/);
   assert.match(worker, /\.filter\(\(node\) => !node\.funded\)/);
   assert.doesNotMatch(worker, /api\/awaiting-service-nodes|AWAITING_CACHE/);
-  assert.match(css, /\.awaiting-live-table \.table-head,[\s\S]*min-width:1910px;[\s\S]*column-gap:16px/);
-  assert.match(css, /\.awaiting-live-table \.table-head \{[\s\S]*min-height:72px/);
+  assert.match(css, /\.awaiting-live-table/);
+  for (const heading of ["CONTRIBUTED (JUDE)", "STILL REQUIRED (JUDE)", "OPEN TO PUBLIC (JUDE)", "RESERVED REMAINING (JUDE)"]) {
+    assert.ok(page.includes(heading), `Missing awaiting-contribution field: ${heading}`);
+  }
 });
 
 test("never server-renders fabricated fallback chain data", async () => {
@@ -98,22 +325,21 @@ test("never server-renders fabricated fallback chain data", async () => {
   const html = await response.text();
   assert.doesNotMatch(page, /fallbackBlocks|fallbackTransactions/);
   assert.doesNotMatch(html, /840164|2\.84 kH\/s|4\.82 G/);
-  assert.match(html, /0 BLOCK RECORDS/);
-  assert.match(html, /0 TRANSACTION RECORDS/);
-  assert.doesNotMatch(visibleText(html), /\bloading\b|\bN\/A\b|—/i);
+  assert.match(html, /Fetching block records…/);
+  assert.match(html, /Fetching transaction records…/);
+  assert.doesNotMatch(visibleText(html), /\bloading\b|\bN\/A\b|NaN|Infinity/i);
   assert.doesNotMatch(html, /\bRPC\b/i);
-  assert.match(page, /const blocks: Block\[\] = snapshot && blocksSelectionMatches \? snapshot\.blocks\.map/);
-  assert.match(page, /const transactions: Transaction\[\] = snapshot && transactionsSelectionMatches \? snapshot\.transactions\.map/);
-  assert.match(page, /\{\(!snapshot \|\| !blocksSelectionMatches\) && <div className="nodes-loading notranslate" translate="no">\{"0 BLOCK RECORDS · No verified snapshot for this page yet"\}<\/div>\}/);
-  assert.match(page, /\{\(!snapshot \|\| !transactionsSelectionMatches\) && <div className="nodes-loading notranslate" translate="no">\{"0 TRANSACTION RECORDS · No verified snapshot for this page yet"\}<\/div>\}/);
+  assert.match(page, /const homepageBlocks: Block\[\] = \(\(homepageBlockLedger\.data as BlocksPageSnapshot \| null\)\?\.rows \?\? \[\]\)\.map/);
+  assert.match(page, /const homepageTransactions: Transaction\[\] = \(\(homepageTransactionLedger\.data as TransactionsPageSnapshot \| null\)\?\.rows \?\? \[\]\)\.map/);
+  assert.match(page, /loadingMessage=\{homepageBlockLedger\.loading \? "Fetching block records…" : homepageBlockLedger\.error \|\| undefined\}/);
+  assert.match(page, /loadingMessage=\{homepageTransactionLedger\.loading \? "Fetching transaction records…" : homepageTransactionLedger\.error \|\|/);
 });
 
 test("renders an accurate statistics command center", async () => {
   const response = await render("/statistics");
   assert.equal(response.status, 200);
   const html = await response.text();
-  assert.match(html, /Judecoin network,/);
-  assert.match(html, /Explore Judecoin blocks, transactions, Service Nodes, staking, and network activity in one place\./);
+  assert.equal(firstHeading(html), "Network Statistics");
   assert.doesNotMatch(html, /retrieved through read-only public Judecoin RPC endpoints/i);
   assert.match(html, /Service Node Status/);
   assert.match(html, /Service Node Staking/);
@@ -136,7 +362,7 @@ test("uses live current-chain Service Nodes while preserving locked deregistrati
   assert.match(page, /\{"TOTAL SHOWN"\}/);
   assert.match(page, /\{"CURRENT SERVICE NODES"\}/);
   assert.match(page, /unlocking nodes remain included in Active/);
-  assert.match(page, /#ef677b \$\{offlineEnd\}% 100%/);
+  assert.match(page, /\$\{offlineEnd\}% 100%/);
   assert.match(page, /Deregistered · Stake locked/);
 });
 
@@ -147,74 +373,88 @@ test("uses total mined supply for the staking ratio and never fabricates 100 per
   ]);
   assert.match(page, /serviceNodes\.totalContributed \/ minedSupply/);
   assert.match(page, /% of total mined supply/);
-  assert.match(page, /\(stakingRatio \?\? 0\)\.toFixed\(2\)/);
-  assert.match(page, /minedSupply \? atomicJude\(minedSupply\) : "0"/);
+  assert.match(page, /stakingRatio == null \? "—" : `\$\{stakingRatio\.toFixed\(2\)\}%`/);
+  assert.match(page, /minedSupply == null \? "—" : atomicJude\(minedSupply\)/);
   assert.doesNotMatch(page, /fundingProgress|registered Service Node requirement/);
   assert.match(worker, /JUDECOIN_EMISSION_API/);
   assert.match(worker, /minedSupply: hasCurrentMinedSupply \? minedSupply : null/);
 });
 
 test("keeps the complete primary navigation and groups Statistics after Service Nodes", async () => {
-  const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
-  const nav = page.slice(page.indexOf('<div className="nav-links">'), page.indexOf("</div>", page.indexOf('<div className="nav-links">')));
-  assert.match(nav, /Home/);
-  assert.match(nav, /Blocks/);
-  assert.match(nav, /Transactions/);
-  assert.match(nav, /Service Nodes/);
-  assert.match(nav, /Statistics/);
-  assert.match(nav, /Quorums/);
-  assert.match(nav, /<a className=\{serviceNodesOnly \? "active" : undefined\} href="\/service-nodes">/);
-  assert.match(nav, /<a className=\{statisticsOnly \? "active" : undefined\} href="\/statistics">/);
-  assert.ok(nav.indexOf("Home") < nav.indexOf("Service Nodes"));
-  assert.ok(nav.indexOf("Service Nodes") < nav.indexOf("Statistics"));
-  assert.ok(nav.indexOf("Statistics") < nav.indexOf("Blocks"));
-  assert.ok(nav.indexOf("Blocks") < nav.indexOf("Transactions"));
-  assert.ok(nav.indexOf("Transactions") < nav.indexOf("Quorums"));
+  const [response, page] = await Promise.all([render(), readProductionSource(new URL("../app/page.tsx", import.meta.url))]);
+  const html = await response.text();
+  const nav = html.slice(html.indexOf("<nav"), html.indexOf("</nav>") + 6);
+  assert.match(nav, /aria-label="Primary navigation"/);
+  assert.doesNotMatch(nav, /aria-label="Quorums"/);
+  const destinations = ["Home", "Service Nodes", "Statistics", "Blocks", "Transactions"];
+  let previous = -1;
+  for (const destination of destinations) {
+    const index = nav.indexOf(`aria-label="${destination}"`);
+    assert.ok(index > previous, `Missing or misplaced navigation destination: ${destination}`);
+    previous = index;
+  }
+  for (const href of ["/", "/service-nodes", "/statistics"]) assert.ok(nav.includes(`href="${href}"`));
+  assert.match(nav, /aria-label="Home"[^>]*aria-current="page"/);
+  for (const [route, destination] of [["/service-nodes", "Service Nodes"], ["/statistics", "Statistics"]]) {
+    const routeHtml = await (await render(route)).text();
+    assert.ok(new RegExp(`aria-label="${destination}"[^>]*aria-current="page"`).test(routeHtml));
+  }
   assert.doesNotMatch(page, /import Link from "next\/link"/);
   const quorumIndex = page.indexOf('id="quorums"');
   const homeServiceNodesIndex = page.indexOf('id="home-service-nodes"');
-  assert.ok(quorumIndex >= 0 && homeServiceNodesIndex > quorumIndex);
+  assert.ok(homeServiceNodesIndex >= 0 && quorumIndex > homeServiceNodesIndex);
+  assert.ok(html.indexOf('id="blocks"') < html.indexOf('id="transactions"'));
+  assert.ok(html.indexOf('id="transactions"') < html.indexOf('id="home-service-nodes"'));
+  assert.ok(html.indexOf('id="home-service-nodes"') < html.indexOf('id="quorums"'));
   assert.match(page, /b\.lastRewardAt - a\.lastRewardAt/);
-  assert.match(page, /\.slice\(0, 5\)/);
+  const latestNodes = page.slice(page.indexOf("const homepageServiceNodes"), page.indexOf("useEffect", page.indexOf("const homepageServiceNodes")));
+  assert.match(latestNodes, /\.slice\(homepageServiceNodePage \* homepageServiceNodePageSize/);
+  assert.match(page, /homepageServiceNodePageSize, setHomepageServiceNodePageSize\] = useState\(10\)/);
   assert.match(page, /homepageServiceNodes\.map/);
   assert.match(page, /LAST REWARD BLOCK ↓/);
   assert.match(page, /Boolean\(serviceNodes\?\.decommissionedNodes\.length\)/);
-  assert.match(page, /This panel is hidden automatically when all nodes return to service/);
 });
 
-test("keeps the phone layout contained and readable", async () => {
+test("preserves every network metric and keeps wide ledgers independently scrollable", async () => {
   const [page, css] = await Promise.all([
     readProductionSource(new URL("../app/page.tsx", import.meta.url)),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
-  const mobileAuthority = css.slice(css.indexOf("/* Mobile layout authority."));
-  assert.ok(mobileAuthority.length > 0);
-  assert.match(page, /className="block-size-card"/);
-  assert.match(page, /className="block-size-value notranslate" translate="no"/);
-  assert.match(page, /className="block-size-ratio"/);
-  assert.match(page, /className="block-size-limit"/);
-  assert.match(page, /className="block-size-caption"/);
-  assert.match(page, /Median \/ protocol limit/);
-  assert.match(page, /liveNetwork\.blockSizeMedian \/ liveNetwork\.blockSizeLimit/);
-  assert.match(css, /\.metrics \.block-size-ratio \{/);
-  assert.match(mobileAuthority, /\.nav::before[\s\S]*background:rgba\(3,10,8,\.985\)!important/);
-  assert.match(mobileAuthority, /\.decommissioned-live-heading[\s\S]*grid-template-columns:minmax\(0,1fr\)!important/);
-  assert.match(mobileAuthority, /\.decommissioned-live-table[\s\S]*overflow-x:auto!important/);
-  assert.match(mobileAuthority, /grid-template-areas:[\s\S]*"index height validators"[\s\S]*"workers workers toggle"!important/);
-  assert.match(mobileAuthority, /\.tx-type-legend-items[\s\S]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)!important/);
-  assert.match(mobileAuthority, /\.tx-table \.table-head,[\s\S]*min-width:1160px!important/);
-  assert.match(mobileAuthority, /\.nodes-table \.table-head,[\s\S]*min-width:1630px!important/);
-  assert.match(mobileAuthority, /\.table-card \.table-head > :first-child,[\s\S]*position:static!important/);
+  for (const field of ["block-size-card", "block-size-value", "block-size-limit"]) {
+    assert.ok(page.includes(field), `Missing block-size field: ${field}`);
+  }
+  assert.match(page, /MEDIAN BLOCK WEIGHT/);
+  assert.match(page, /<NetworkOverview network=\{liveNetwork\}/);
+  assert.equal(cssProperty(css, ".table-card", "overflow-x"), "auto");
+  assert.match(css, /@media\s*\(max-width:\s*\d+px\)/);
+  assertNoHiddenColumnRules(css, ["table-head", "table-row"]);
 });
 
-test("makes the homepage telemetry animation clearly visible", async () => {
-  const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-  assert.match(css, /\.hero::before \{[\s\S]*hero-radar-pulse/);
-  assert.match(css, /\.hero::after \{[\s\S]*hero-sweep/);
-  assert.match(css, /\.particle-field i \{[\s\S]*hero-particle-drift/);
-  assert.match(css, /@keyframes ambient-one-drift/);
-  assert.match(css, /@keyframes ambient-two-drift/);
-  assert.match(css, /@media \(prefers-reduced-motion:reduce\)/);
+test("keeps all eight network metrics in the approved visual between the original hero and ledgers", async () => {
+  const [response, css] = await Promise.all([
+    render(), readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  const html = await response.text();
+  assert.match(html, /Explore the Judecoin mainnet\./);
+  assert.match(visibleText(html), /Validation without surveillance\./);
+  assert.doesNotMatch(html, /class="privacy-note"/);
+  const start = html.indexOf('<section class="network-overview shell');
+  const end = html.indexOf("</section>", start);
+  assert.ok(start >= 0 && end > start);
+  const metrics = html.slice(start, end);
+  const labels = [...metrics.matchAll(/<small>([\s\S]*?)<\/small>/g)].map((match) => visibleText(match[1]));
+  for (const label of ["CHAIN HEIGHT", "NETWORK HASH RATE", "NETWORK DIFFICULTY", "TARGET BLOCK TIME", "LATEST BLOCK AGE", "ACTIVE SERVICE NODES", "MEDIAN BLOCK WEIGHT", "JUDE VERSION"]) {
+    assert.equal(labels.filter((value) => value === label).length, 1, `Missing or duplicated network metric: ${label}`);
+  }
+  assert.match(metrics, /class="network-bento"/);
+  assert.match(metrics, /class="chain-interval-section"/);
+  assert.match(metrics, /class="quorum-orbit-visual/);
+  assert.match(metrics, /Block intervals appear after this page is verified\./);
+  assert.match(metrics, /No verified membership sample/);
+  assert.ok(html.indexOf('class="hero shell"') < start);
+  assert.ok(start < html.indexOf('id="blocks"'));
+  assert.doesNotMatch(html, /class="[^"]*\b(?:nav-rail|workspace-bar)\b/);
+  assert.match(css, /@media\s*\(prefers-reduced-motion:\s*reduce\)/);
 });
 
 test("paginates the Service Node list with 50 rows by default", async () => {
@@ -224,7 +464,7 @@ test("paginates the Service Node list with 50 rows by default", async () => {
     readProductionSource(new URL("../worker/index.ts", import.meta.url)),
   ]);
   const html = await response.text();
-  assert.match(html, /Service Node Overview/);
+  assert.match(html, /<h2>Service Node Overview<\/h2>/);
   assert.match(html, /Search by node public key/);
   assert.match(page, /filteredServiceNodes/);
   assert.match(page, /TOTAL NODES:/);
@@ -249,7 +489,7 @@ test("paginates the Service Node list with 50 rows by default", async () => {
   assert.doesNotMatch(worker, /rank\(a\) - rank\(b\)/);
 });
 
-test("server-renders all six Service Node summaries as protected numeric zeros", async () => {
+test("all six Service Node summaries protect unknown values and retain verified numeric zeros", async () => {
   const response = await render("/service-nodes");
   assert.equal(response.status, 200);
   const html = await response.text();
@@ -257,19 +497,40 @@ test("server-renders all six Service Node summaries as protected numeric zeros",
   const end = html.indexOf("</div>", start);
   assert.ok(start >= 0 && end > start);
   const summary = html.slice(start, end + "</div>".length);
-  const values = [...summary.matchAll(/<article(?: class="[^"]*")?><small>([^<]+)<\/small><strong class="notranslate" translate="no">([\s\S]*?)<\/strong>/g)]
+  const valuesFrom = (value) => [...value.matchAll(/<article(?: class="[^"]*")?><small>([^<]+)<\/small><strong class="notranslate" translate="no">([\s\S]*?)<\/strong>/g)]
     .map((match) => [match[1], visibleText(match[2])]);
 
-  assert.deepEqual(values, [
-    ["TOTAL SERVICE NODES", "0"],
-    ["ACTIVE NODES", "0"],
-    ["STAKING REQUIREMENT", "0 JUDE"],
-    ["TOTAL STAKED", "0 JUDE"],
-    ["UNLOCKING NODES", "0"],
-    ["DECOMMISSIONED NODES", "0"],
+  assert.deepEqual(valuesFrom(summary), [
+    ["TOTAL SERVICE NODES", "—"],
+    ["ACTIVE NODES", "—"],
+    ["STAKING REQUIREMENT", "— JUDE"],
+    ["TOTAL STAKED", "— JUDE"],
+    ["UNLOCKING NODES", "—"],
+    ["DECOMMISSIONED NODES", "—"],
   ]);
   assert.equal((summary.match(/class="notranslate" translate="no"/g) || []).length, 6);
-  assert.doesNotMatch(visibleText(summary), /\bloading\b|\bN\/A\b|—/i);
+  assert.doesNotMatch(visibleText(summary), /\bloading\b|\bN\/A\b|\b0\b/i);
+
+  const source = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
+  const compiled = ts.transpileModule(`${source}\nexport { ExplorerView };`, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const testModule = { exports: {} };
+  vm.runInNewContext(compiled, { module: testModule, exports: testModule.exports, require: createRequire(import.meta.url) });
+  const verified = renderToStaticMarkup(React.createElement(testModule.exports.ExplorerView, {
+    serviceNodesOnly: true, statisticsOnly: false, connection: "live", serviceNodeQuery: "",
+    serviceNodes: { total: 0, active: 0, stakingRequirement: 0, totalContributed: 0, exiting: 0, decommissioned: 0, decommissionedNodes: [] },
+    filteredServiceNodes: [], paginatedServiceNodes: [], awaitingServiceNodeRows: [],
+    serviceNodePage: 0, serviceNodeLastPage: 0, serviceNodePageSize: 50,
+  }));
+  const verifiedStart = verified.indexOf('<div class="staking-stats">');
+  const verifiedSummary = verified.slice(verifiedStart, verified.indexOf("</div>", verifiedStart) + "</div>".length);
+  assert.deepEqual(valuesFrom(verifiedSummary), [
+    ["TOTAL SERVICE NODES", "0"], ["ACTIVE NODES", "0"],
+    ["STAKING REQUIREMENT", "0 JUDE"], ["TOTAL STAKED", "0 JUDE"],
+    ["UNLOCKING NODES", "0"], ["DECOMMISSIONED NODES", "0"],
+  ]);
+  assert.equal((verifiedSummary.match(/class="notranslate" translate="no"/g) || []).length, 6);
 });
 
 test("paginates deregistration records at 20 rows while fetching the complete history", async () => {
@@ -287,9 +548,9 @@ test("paginates deregistration records at 20 rows while fetching the complete hi
 
 test("searches blocks, transactions, and Service Node public keys", async () => {
   const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
-  assert.match(page, /fetch\(`\/api\/block\?id=/);
-  assert.match(page, /fetch\(`\/api\/transaction\?hash=/);
-  assert.match(page, /fetch\(`\/api\/service-node\?key=/);
+  assert.match(page, /readPublicDetail\(`\/api\/block\?id=/);
+  assert.match(page, /readPublicDetail\(`\/api\/transaction\?hash=/);
+  assert.match(page, /readPublicDetail\(`\/api\/service-node\?key=/);
   assert.match(page, /#block-/);
   assert.match(page, /#tx-/);
   assert.match(page, /#node-/);
@@ -321,7 +582,7 @@ test("uses live chain data, a constrained emission feed, freshness checks, and p
 
   assert.match(page, /if \(inputs == null && outputs == null\) return "N\/A"/);
   assert.match(page, /return `\$\{inputs \?\? "N\/A"\}\/\$\{outputs \?\? "N\/A"\}`/);
-  assert.match(page, /Not detected/);
+  assert.match(page, /data\.doubleSpendSeen === true \? \[{ label: "DOUBLE-SPEND FLAG", value: "Detected" }\] : \[\]/);
 });
 
 test("serves the last verified chain snapshot immediately while refreshing it in the background", async () => {
@@ -334,11 +595,12 @@ test("serves the last verified chain snapshot immediately while refreshing it in
   assert.match(worker, /cache\.put\(cacheKey, stored\.clone\(\)\)/);
   assert.match(worker, /return noStoreResponse\(cached\)/);
   assert.match(worker, /ctx\.waitUntil\(refreshChainCache\(cache, cacheKey, url\)/);
-  assert.match(worker, /const serviceNodesResponsePromise = serviceNodeStatesRequest\(topHeight\)/);
+  assert.match(worker, /serviceNodesHeight: null/);
+  assert.match(worker, /serviceNodes: null/);
   assert.match(worker, /get_tx_hashes: true/);
-  assert.match(worker, /Promise\.all\(\[[\s\S]*serviceNodesResponsePromise,[\s\S]*latestBlockDetailsPromise,[\s\S]*transactionDetailsPromise/);
-  assert.match(worker, /const quorumSnapshotPromise = quorumPageSnapshot/);
-  assert.match(worker, /return cachedChainResponse\(request, url, ctx\)/);
+  assert.match(worker, /Promise\.all\(\[[\s\S]*emissionSnapshotPromise,[\s\S]*latestBlockDetailsPromise,[\s\S]*transactionDetailsPromise/);
+  assert.doesNotMatch(worker, /const quorumSnapshotPromise = quorumPageSnapshot/);
+  assert.match(worker, /return capture\("chain", cachedChainResponse\(request, url, ctx\)\)/);
 });
 
 test("hides unavailable fields across service-node detail states", async () => {
@@ -346,13 +608,14 @@ test("hides unavailable fields across service-node detail states", async () => {
     readProductionSource(new URL("../app/page.tsx", import.meta.url)),
     readProductionSource(new URL("../worker/index.ts", import.meta.url)),
   ]);
-  const start = page.indexOf("async function openServiceNode");
-  const end = page.indexOf("async function search", start);
+  const start = page.indexOf("function createServiceNodeDetail");
+  const end = page.indexOf("function useDetails", start);
   const detail = page.slice(start, end);
   assert.match(detail, /data\.operatorAddress \? \[\{ label: "OPERATOR ADDRESS"/);
   assert.match(detail, /data\.historical \? \[\] : \[/);
   assert.match(detail, /protocolRows\.length \? \[\{ kicker: "PUBLIC NODE DATA"/);
-  assert.match(detail, /\.\.\.\(serviceNodeHeight > 0 && liveNetwork \? \[/);
+  assert.match(detail, /const estimate = pendingUnlock && verifiedSchedule \? serviceNodeUnlockEstimate/);
+  assert.match(page, /const displayedDetail = useMemo/);
   assert.doesNotMatch(detail, /Removed from current RPC state|Not retained in the current historical index|Awaiting current chain height|Awaiting network timing|Never \/ not provided|Node did not provide/);
   assert.match(worker, /publicEndpoint: node\.public_ip \? \[node\.public_ip, node\.quorumnet_port\]\.filter\(Boolean\)\.join\(":"\) : null/);
   assert.doesNotMatch(worker, /publicEndpoint:.*Not published|version:.*Unknown/);
@@ -368,32 +631,28 @@ test("preserves authoritative transaction classification and multi-node pool val
   assert.doesNotMatch(worker, /rawExtra.*deregistration|extraBytes.*deregistration/i);
 });
 
-test("ships a real responsive phone layout and no local font paths", async () => {
+test("ships responsive metric grids and avoids machine-specific font paths", async () => {
   const [css, layout] = await Promise.all([
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
   ]);
-  assert.match(css, /body\{width:auto!important;max-width:100%!important;overflow-x:hidden!important;font-size:16px!important;zoom:1!important\}/);
-  assert.match(css, /\.metrics\s*\{\s*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)!important/);
-  assert.match(css, /\.nav-links\{display:flex!important;order:3!important;width:100%!important/);
-  assert.match(css, /\.table-card\{width:100%!important;max-width:100%!important;overflow-x:auto!important\}/);
+  assert.match(cssDeclarations(css, ".metrics"), /grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(cssDeclarations(css, ".network-overview .network-metrics"), /grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(cssProperty(css, ".network-overview .network-metrics", "grid-template-columns"), /^repeat\(2,\s*minmax\(0,\s*1fr\)\)$/);
+  assert.match(cssDeclarations(css, ".nav-links"), /display:\s*(?:grid|flex)/);
+  assert.equal(cssProperty(css, "body", "zoom"), "1", "The final mobile rules must neutralize the historical scaled layout");
   assert.doesNotMatch(layout, /next\/font|\/Users\//);
 });
 
-test("keeps final telemetry labels readable and homepage node headers complete", async () => {
-  const [css, page] = await Promise.all([
-    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
-    readProductionSource(new URL("../app/page.tsx", import.meta.url)),
-  ]);
-  assert.match(css, /\.chain-pulse-panel>header>span\{[^}]*font-size:12px/);
-  assert.match(css, /\.pulse-footer\{[^}]*font-size:12px/);
-  assert.match(css, /\.home-service-nodes \.nodes-table \.table-head\{[^}]*min-height:72px/);
-  assert.match(css, /\.home-service-nodes \.nodes-table \.table-head>\*\{overflow:visible;text-overflow:clip;white-space:normal/);
-  assert.match(css, /\.metrics article > span\.trend,[\s\S]*color:#59f0b7!important/);
-  assert.match(css, /\.metrics article > span\.warning,[\s\S]*color:#f2bf66!important/);
-  assert.match(css, /\.metrics article > span\.offline,[\s\S]*color:#ff858b!important/);
-  assert.match(page, /className="block-height notranslate" translate="no">\{liveNetwork \? compact\(liveNetwork\.height\) : "0"\}/);
-  assert.match(page, /className="notranslate" translate="no">\{compact\(serviceNodes\?\.active \?\? 0\)\}/);
+test("retains every homepage Service Node column and protects numeric metrics from translation", async () => {
+  const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
+  const homeNodes = page.slice(page.indexOf('id="home-service-nodes"'), page.indexOf('<section className="quorum-section'));
+  for (const heading of ["STATUS", "NODE PUBLIC KEY", "CONTRIBUTORS", "OPERATOR FEE (%)", "STAKE (JUDE)", "REGISTRATION HEIGHT", "LAST REWARD BLOCK ↓", "VERSION"]) {
+    assert.ok(homeNodes.includes(heading), `Missing homepage Service Node heading: ${heading}`);
+  }
+  assert.match(page, /className="block-height notranslate" translate="no">\{network \? compact\(network\.height\) : "—"\}/);
+  assert.match(page, /<NetworkOverview network=\{liveNetwork\}/);
+  assert.match(page, /className="notranslate" translate="no">\{serviceNodes \? compact\(serviceNodes\.active\) : "—"\}/);
 });
 
 test("retries slow live snapshot requests without clearing previously loaded data", async () => {
@@ -401,26 +660,28 @@ test("retries slow live snapshot requests without clearing previously loaded dat
   assert.match(page, /SNAPSHOT_RETRY_DELAYS_MS = \[0, 1_200, 3_000\]/);
   assert.match(page, /async function fetchSnapshotWithRetry/);
   assert.match(page, /return await fetchSnapshot\(params\)/);
-  assert.match(page, /const data = await fetchSnapshotWithRetry\(snapshotParams\(\)\)/);
-  assert.match(page, /const data = await fetchSnapshotWithRetry\(snapshotParams\(\{\}, targetHeight\)\)/);
+  assert.match(page, /const data = overviewOnly \? await fetchSnapshot\(overviewParams\) : await fetchSnapshotWithRetry\(params, 1\)/);
+  assert.match(page, /const params = snapshotParams\(\{\}, targetHeight\)/);
   assert.doesNotMatch(page, /catch[^}]*setSnapshot\(null\)/s);
 });
 
-test("keeps the complete Statistics page typography readable", async () => {
-  const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-  assert.match(css, /\.statistics-page \.unlock-estimate-note\{[^}]*font-size:14px;line-height:1\.65/);
-  assert.match(css, /\.statistics-page \.status-ledger dt\{font-size:14px\}/);
-  assert.match(css, /\.statistics-page \.stake-mini-grid span\{font-size:12\.5px/);
-  assert.match(css, /\.statistics-page \.lifecycle-grid span\{font-size:13px/);
-  assert.match(css, /\.statistics-page \.protocol-panel dt\{font-size:12\.5px/);
-  assert.match(css, /\.statistics-page \.pulse-tooltip b,\.statistics-page \.pulse-tooltip em\{font-size:10px\}/);
+test("keeps the complete Statistics page lifecycle information and timing explanation", async () => {
+  const response = await render("/statistics");
+  const text = visibleText(await response.text());
+  for (const label of ["Service Node Status", "Service Node Staking", "Recent Block Activity", "Chain Parameters", "Service Node Lifecycle", "UNLOCKING", "DECOMMISSIONED", "DEREGISTRATION RECORDS"]) {
+    assert.ok(text.includes(label), `Missing Statistics section: ${label}`);
+  }
+  const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
+  assert.match(page, /Estimates use verified unlock heights/);
+  assert.match(page, /Historical schedules without a current verified lock have no expiry estimate/);
 });
 
-test("keeps the primary navigation fixed without covering page content", async () => {
+test("reserves space for the original fixed horizontal navigation", async () => {
   const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-  assert.match(css, /main\{padding-top:92px\}/);
-  assert.match(css, /\.nav\{\s*position:fixed;\s*top:0;\s*left:50%;/);
-  assert.match(css, /transform:translateX\(-50%\)/);
+  assert.equal(cssProperty(css, ".nav", "position"), "fixed");
+  assert.ok(parseFloat(cssProperty(css, "main", "padding-top")) > 0, "Page content must reserve navigation space");
+  assert.doesNotMatch(css, /--rail-width|\.nav-rail|\.workspace-bar/);
+  assert.ok(parseFloat(cssProperty(css, "html", "scroll-padding-top")) > 0, "Anchor scrolling needs a navigation offset");
 });
 
 test("loads fast network data and verified pool data independently", async () => {
@@ -432,21 +693,21 @@ test("loads fast network data and verified pool data independently", async () =>
   const chainEnd = worker.indexOf("async function createChainResponse", chainStart);
   const chain = worker.slice(chainStart, chainEnd);
 
-  assert.match(page, /fetch\("\/api\/network", \{ cache: "no-store" \}\)/);
-  assert.match(page, /fetch\("\/api\/transaction-pool", \{ cache: "no-store" \}\)/);
+  assert.match(page, /fetchExplorerJson<NetworkPreview>\("\/api\/network", "Network overview unavailable"\)/);
+  assert.match(page, /fetchExplorerJson<TransactionPoolSnapshot>\("\/api\/transaction-pool", "Transaction pool unavailable"\)/);
   assert.match(page, /const liveNetwork = !networkPreview/);
   assert.match(page, /\(isProvisionalSnapshot\(snapshot\) && !isProvisionalSnapshot\(networkPreview\)\)/);
   assert.match(page, /isProvisionalSnapshot\(snapshot\) === isProvisionalSnapshot\(networkPreview\) && isNewerHeightSnapshot\(/);
   assert.match(page, /snapshot\.network\.height, snapshot\.fetchedAt, networkPreview\.network\.height, networkPreview\.fetchedAt/);
-  assert.match(page, /compact\(transactionPool\?\.available \? transactionPool\.count : 0\)/);
+  assert.match(page, /transactionPool\?\.available \? compact\(transactionPool\.count\) : "—"/);
   assert.match(worker, /async function networkPreviewSnapshot\(\)/);
   assert.match(worker, /async function transactionPoolSnapshot\(\)/);
   assert.match(worker, /url\.pathname === "\/api\/network"/);
   assert.match(worker, /url\.pathname === "\/api\/transaction-pool"/);
   assert.match(worker, /const NETWORK_CACHE_FRESH_MS = 3_000/);
   assert.match(worker, /const TRANSACTION_POOL_CACHE_FRESH_MS = 5_000/);
-  assert.match(worker, /return cachedNetworkLiveResponse\(url, ctx\)/);
-  assert.match(worker, /return cachedTransactionPoolLiveResponse\(url, ctx\)/);
+  assert.match(worker, /return capture\("network", cachedNetworkLiveResponse\(url, ctx\)\)/);
+  assert.match(worker, /return capture\("transactionPool", cachedTransactionPoolLiveResponse\(url, ctx\)\)/);
   assert.match(chain, /transactionPool:\s*\{\s*available: false/);
   assert.doesNotMatch(chain, /get_transaction_pool/);
 });
@@ -458,9 +719,9 @@ test("loads and preserves verified testing-quorum data independently", async () 
     readProductionSource(new URL("../worker/index.ts", import.meta.url)),
   ]);
   const html = await response.text();
-  const quorumSection = page.slice(page.indexOf('<section className="quorum-section'), page.indexOf('<section className="staking home-service-nodes'));
+  const quorumSection = page.slice(page.indexOf('<section className="quorum-section'), page.indexOf('<section className="privacy-panel'));
 
-  assert.match(page, /fetch\(`\/api\/quorums\?\$\{params\}`/);
+  assert.match(page, /fetchExplorerJson<QuorumSnapshot>\(`\/api\/quorums\?\$\{params\}`/);
   assert.match(page, /else if \(quorumPage === 0\) params\.set\("latest", "1"\)/);
   assert.match(page, /Math\.min\(10000, Math\.floor\(liveNetwork\.height \/ quorumPageSize\)\)/);
   assert.match(page, /setQuorumLiveSnapshot/);
@@ -472,12 +733,13 @@ test("loads and preserves verified testing-quorum data independently", async () 
   assert.doesNotMatch(failedRefresh, /setQuorumLiveSnapshot|lastVerifiedQuorumSnapshot\s*=/);
   assert.match(page, /quorumRefreshRef\.current\?\.\(\)/);
   assert.match(page, /const QUORUM_REFRESH_DELAY_MS = 5_000/);
-  assert.match(quorumSection, /className="notranslate" translate="no">\{latestQuorum\?\.validators\.length \?\? 0\}/);
-  assert.match(quorumSection, /latestQuorum \? compact\(latestQuorum\.height\) : "0"/);
+  assert.match(quorumSection, /className="notranslate" translate="no">\{latestQuorum \? latestQuorum\.validators\.length : "—"\}/);
+  assert.match(quorumSection, /className="notranslate" translate="no">\{latestQuorum \? latestQuorum\.workers\.length : "—"\}/);
+  assert.match(quorumSection, /latestQuorum \? compact\(latestQuorum\.height\) : "—"/);
   assert.match(quorumSection, /quorums\?\.truncated/);
   assert.match(quorumSection, /Older quorum history exists\. Select a larger page size to reach earlier heights\./);
   assert.doesNotMatch(quorumSection, /Loading live quorum data|"N\/A"/);
-  assert.match(html, /0 QUORUM RECORDS/);
+  assert.match(html, /Awaiting quorum records/);
 
   assert.match(worker, /const QUORUM_CACHE_FRESH_MS = 15_000/);
   assert.match(worker, /const MAX_QUORUM_PAGE = 10_000/);
@@ -497,7 +759,7 @@ test("loads and preserves verified testing-quorum data independently", async () 
   assert.match(worker, /verifiedTestingQuorumRequest\(\{\}, 1\)/);
   assert.match(worker, /path: `\/api\/quorums\?page=\$\{quorumPage\}&pageSize=\$\{pageSize\}\$\{latestOnly/);
   assert.match(worker, /`&tip=\$\{requestedTip\}`/);
-  assert.match(worker, /return cachedQuorumLiveResponse\(url, ctx\)/);
+  assert.match(worker, /return capture\("quorums", cachedQuorumLiveResponse\(url, ctx\)\)/);
 });
 
 test("refreshes every live feed without overlapping requests or clearing good data", async () => {
@@ -539,7 +801,7 @@ test("serves one strict real-time Service Node definition with private browser c
   const builder = worker.slice(builderStart, builderEnd);
   assert.match(worker, /url\.pathname === "\/api\/service-nodes-live"/);
   assert.equal((worker.match(/serviceNodes: buildServiceNodesSnapshot\(currentServiceNodeStates, topHeight\)/g) || []).length, 1);
-  assert.equal((worker.match(/serviceNodes: buildServiceNodesSnapshot\(currentServiceNodeStates, serviceNodeTopHeight\)/g) || []).length, 1);
+  assert.equal((worker.match(/serviceNodes: buildServiceNodesSnapshot\(currentServiceNodeStates, serviceNodeTopHeight\)/g) || []).length, 0);
   assert.match(worker, /if \(!Array\.isArray\(serviceNodeStates\)\)/);
   assert.match(worker, /const SERVICE_NODES_CACHE_FRESH_MS = 5_000/);
   assert.match(worker, /const SERVICE_NODES_CACHE_STALE_MS = 300_000/);
@@ -554,19 +816,19 @@ test("serves one strict real-time Service Node definition with private browser c
   assert.match(worker, /info\?\.mainnet !== true \|\| info\?\.nettype !== "mainnet"/);
   assert.match(worker, /minimumHeight: Number\.isInteger\(requestedTip\)/);
   assert.match(worker, /createServiceNodesLiveResponse\(new URL\(url\.toString\(\)\)\)/);
-  assert.match(worker, /serviceNodesHeight: serviceNodeTopHeight/);
+  assert.match(worker, /serviceNodesHeight: null/);
   assert.match(worker, /return noStoreResponse\(stored\)/);
-  assert.match(worker, /return cachedServiceNodesLiveResponse\(url, ctx\)/);
+  assert.match(worker, /return capture\("serviceNodes", cachedServiceNodesLiveResponse\(url, ctx\)\)/);
   assert.match(builder, /active: currentServiceNodeStates\.filter\(\(node\) => node\.active\)\.length/);
   assert.match(builder, /active: node\.active/);
   assert.doesNotMatch(builder, /Boolean\(node\.active\)|loading/i);
-  assert.match(page, /const chainServiceNodesSnapshot: ServiceNodesLiveSnapshot \| null = snapshot \? \{/);
+  assert.match(page, /const chainServiceNodesSnapshot: ServiceNodesLiveSnapshot \| null = snapshot\?\.serviceNodes && snapshot\.serviceNodesHeight != null \? \{/);
   assert.match(page, /const selectedServiceNodesSnapshot = !serviceNodesLive[\s\S]*isNewerHeightSnapshot\([\s\S]*chainServiceNodesSnapshot\.height[\s\S]*serviceNodesLive\.height/);
   assert.match(page, /const serviceNodes = selectedServiceNodesSnapshot\?\.serviceNodes \?\? null/);
   assert.match(page, /const serviceNodeHeight = selectedServiceNodesSnapshot\?\.height \?\? 0/);
-  assert.match(page, /compact\(serviceNodes\?\.active \?\? 0\)[\s\S]*\{"Active on mainnet"\}/);
+  assert.match(page, /\{"ACTIVE SERVICE NODES"\}<\/small><strong className="notranslate" translate="no">\{serviceNodes \? compact\(serviceNodes\.active\) : "—"\}/);
   assert.doesNotMatch(page, /Loading Service Nodes|Loading live Service Node data|Loading nodes/);
-  assert.doesNotMatch(page, /\b439\b|\b440\b/);
+  assert.doesNotMatch(page, /\b(?:active|total):\s*(?:439|440)\b|(?:activeServiceNodes|currentServiceNodeTotal|statusTotal)\s*=\s*(?:439|440)\b/);
   assert.doesNotMatch(worker, /\bactive:\s*439\b|\btotal:\s*440\b/);
 });
 
@@ -635,7 +897,7 @@ test("restores only validated snapshots and never clears verified data after ref
   assert.match(networkValidator, /snapshot\.network\?\.targetSeconds[\s\S]*snapshot\.network\?\.latestBlockTimestamp[\s\S]*snapshot\.network\?\.hardFork[\s\S]*snapshot\.network\?\.blockSizeMedian[\s\S]*snapshot\.network\?\.blockSizeLimit[\s\S]*\.every\(isNonNegativeInteger\)/);
   assert.match(networkValidator, /typeof snapshot\.network\?\.protocol === "string"/);
   assert.match(networkValidator, /typeof snapshot\.network\?\.synced === "boolean"/);
-  assert.match(fetchNetwork, /const data = await response\.json\(\) as NetworkPreview;\s*if \(!isValidNetworkPreview\(data\)\) throw new Error\("Invalid network overview"\)/);
+  assert.match(fetchNetwork, /fetchExplorerJson<NetworkPreview>\("\/api\/network", "Network overview unavailable"\)\.then\(\(data\) => \{\s*if \(!isValidNetworkPreview\(data\)\) throw new Error\("Invalid network overview"\)/);
   assert.match(page, /readClientSnapshot\(CLIENT_SERVICE_NODES_SNAPSHOT_KEY, isValidServiceNodesSnapshot\)/);
   assert.match(page, /const accepted = rememberServiceNodesSnapshot\(data\)/);
   assert.match(page, /if \(restoredNetwork\) setNetworkPreview\(\(current\) => current \?\? restoredNetwork\)/);
@@ -643,17 +905,17 @@ test("restores only validated snapshots and never clears verified data after ref
   assert.match(page, /if \(restoredQuorums\) setQuorumLiveSnapshot\(\(current\) => current \?\? restoredQuorums\)/);
   assert.match(page, /setSnapshot\(\(current\) => current \?\? accepted\)/);
   assert.match(page, /setNetworkPreview\(\(current\) => !current \|\| isProvisionalSnapshot\(current\) \|\| isNewerHeightSnapshot\(/);
-  assert.match(page, /if \(!current \|\| isProvisionalSnapshot\(current\)\) return acceptedChain/);
+  assert.match(page, /setSnapshot\(\(current\) => !current \|\| isProvisionalSnapshot\(current\) \|\| shouldAcceptChainSnapshot\(current, acceptedChain\)/);
   assert.match(page, /if \(accepted\) setQuorumLiveSnapshot\(\(current\) => !current \|\| isProvisionalSnapshot\(current\)/);
-  assert.ok((page.match(/setServiceNodesLive\(\(current\) => !current \|\| isProvisionalSnapshot\(current\) \|\| isNewerHeightSnapshot\(/g) || []).length >= 3);
+  assert.ok((page.match(/setServiceNodesLive\(\(current\) => !current \|\| isProvisionalSnapshot\(current\) \|\| isNewerHeightSnapshot\(/g) || []).length >= 2);
   assert.match(serviceRefresh, /catch \{[\s\S]*Keep the last complete Service Node snapshot visible/);
   assert.doesNotMatch(serviceRefresh, /setServiceNodesLive\(null\)|setSnapshot\(null\)|removeItem/);
 });
 
-test("binds block and transaction rows to the requested pagination selection", async () => {
+test("binds preview snapshots to their selection and home ledgers to independent pagination", async () => {
   const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
   const rowsStart = page.indexOf("const blocksSelectionMatches");
-  const rowsEnd = page.indexOf("const particles", rowsStart);
+  const rowsEnd = page.indexOf("const liveNetwork", rowsStart);
   assert.ok(rowsStart >= 0 && rowsEnd > rowsStart);
   const rowsSelection = page.slice(rowsStart, rowsEnd);
 
@@ -661,8 +923,10 @@ test("binds block and transaction rows to the requested pagination selection", a
   assert.match(rowsSelection, /snapshot\?\.pagination\.transactionPage === transactionPage\s*&& snapshot\.pagination\.transactionScanSize === Math\.max\(160, transactionPageSize \* 32\)/);
   assert.match(rowsSelection, /const blocks: Block\[\] = snapshot && blocksSelectionMatches \? snapshot\.blocks\.map/);
   assert.match(rowsSelection, /const transactions: Transaction\[\] = snapshot && transactionsSelectionMatches \? snapshot\.transactions\.map/);
-  assert.match(page, /\{\(!snapshot \|\| !blocksSelectionMatches\) && <div className="nodes-loading notranslate" translate="no">\{"0 BLOCK RECORDS · No verified snapshot for this page yet"\}<\/div>\}/);
-  assert.match(page, /\{\(!snapshot \|\| !transactionsSelectionMatches\) && <div className="nodes-loading notranslate" translate="no">\{"0 TRANSACTION RECORDS · No verified snapshot for this page yet"\}<\/div>\}/);
+  assert.match(page, /const homepageBlockLedger = useLedgerRefresh\(homeOnly \? "blocks" : null, \{ scope: "home", initialData: initialData\?\.blocks \}\)/);
+  assert.match(page, /const homepageTransactionLedger = useLedgerRefresh\(homeOnly \? "transactions" : null, \{ scope: "home", initialData: initialData\?\.transactions \}\)/);
+  assert.match(page, /<LedgerPagination ledger=\{homepageBlockLedger\} label="Blocks" latestHref="\/#blocks"/);
+  assert.match(page, /<LedgerPagination ledger=\{homepageTransactionLedger\} label="Transactions" latestHref="\/#transactions"/);
 });
 
 test("the Service Nodes-only route skips chain and transaction-pool requests", async () => {
@@ -675,53 +939,80 @@ test("the Service Nodes-only route skips chain and transaction-pool requests", a
   assert.match(poolEffect, /if \(serviceNodesOnly\) return;/);
   assert.match(poolEffect, /fetchTransactionPool\(\)/);
   assert.match(chainEffect, /if \(serviceNodesOnly\) return;/);
-  assert.match(chainEffect, /fetchSnapshotWithRetry\(snapshotParams\(\)\)/);
+  assert.match(chainEffect, /fetchSnapshotWithRetry\(params, 1\)/);
   assert.match(chainCatchUpEffect, /if \(serviceNodesOnly\) return;/);
-  assert.match(chainCatchUpEffect, /fetchSnapshotWithRetry\(snapshotParams\(\{\}, targetHeight\)\)/);
+  assert.match(chainCatchUpEffect, /snapshotParams\(\{\}, targetHeight\)/);
+  assert.match(chainCatchUpEffect, /fetchSnapshotWithRetry\(params, 1\)/);
   assert.doesNotMatch(serviceNodeEffect, /if \(serviceNodesOnly\) return;/);
   assert.match(serviceNodeEffect, /\/api\/service-nodes-live/);
 });
 
-test("restores every metric separator and strengthens the hero radar", async () => {
+test("uses compact record rows with visible boundaries and accessible focus states", async () => {
   const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-  assert.match(css, /\.metrics article:nth-of-type\(4n\) \{ border-right:0!important; \}/);
-  assert.match(css, /\.metrics article:nth-of-type\(n\+5\) \{ border-bottom:0!important; \}/);
-  assert.match(css, /\.metrics article:nth-of-type\(even\) \{ border-right:0!important; \}/);
-  assert.match(css, /\.metrics article:nth-of-type\(n\+7\) \{ border-bottom:0!important; \}/);
-  assert.match(css, /rgba\(76,255,201,\.07\)/);
-  assert.match(css, /filter:drop-shadow\(0 0 26px rgba\(45,232,173,\.08\)\)/);
-  assert.match(css, /@media \(prefers-reduced-motion:reduce\) \{ \*,\*:before,\*:after/);
+  const minimum = cssProperty(css, ".table-row", "min-height");
+  assert.match(minimum ?? "", /^\d+(?:\.\d+)?px$/);
+  assert.ok(parseFloat(minimum) <= 48, `Record rows should be compact: ${minimum}`);
+  assert.match(cssDeclarations(css, ".table-row"), /border-(?:top|bottom)\s*:/);
+  assert.match(css, /:focus-visible/);
+  assert.match(css, /@media\s*\(prefers-reduced-motion:\s*reduce\)/);
 });
 
-test("keeps the fixed navigation visible above every detail page", async () => {
+test("keeps original navigation and the Back action available above full detail pages", async () => {
   const [page, css] = await Promise.all([
     readProductionSource(new URL("../app/page.tsx", import.meta.url)),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
-  assert.match(css, /\.nav\{[\s\S]*position:fixed;/);
-  assert.match(css, /\.nav\{z-index:100\}/);
-  assert.match(css, /\.detail-backdrop\{z-index:80\}/);
-  assert.match(css, /\.detail-page-backdrop\{top:92px\}/);
-  assert.match(css, /\.detail-page\{min-height:calc\(100vh - 92px\)\}/);
-  assert.match(css, /\.detail-page > header\{isolation:isolate\}/);
+  assert.ok(["sticky", "fixed"].includes(cssProperty(css, ".nav", "position")));
+  assert.ok(Number(cssProperty(css, ".nav", "z-index")) > Number(cssProperty(css, ".detail-backdrop", "z-index")));
+  assert.ok(cssProperty(css, ".detail-page-backdrop", "top"), "Detail content must reserve navigation space");
   assert.match(page, /className="detail-back-button" aria-label=\{"Back"\}/);
   assert.doesNotMatch(page, /Back to Explorer/);
 });
 
-test("keeps every detail-page field and ledger heading on one line", async () => {
+test("keeps record values, column headers, and search text legible without restoring oversized rows", async () => {
   const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-  assert.match(css, /\.detail-page \.detail-grid small,[\s\S]*\.detail-page \.ring-head > \*\{\s*white-space:nowrap;\s*overflow-wrap:normal;\s*word-break:normal;/);
-  assert.match(css, /\.transaction-detail-page \.input-summary\{\s*grid-template-columns:minmax\(0,1fr\) 180px 170px;/);
-  assert.match(css, /@media \(max-width:600px\)\{\s*\.transaction-detail-page \.input-summary\{grid-template-columns:1fr\}/);
+  assert.ok(parseFloat(cssProperty(css, ":root", "--record-table-font-size")) >= 13, "Record values should remain at least 13px");
+  assert.ok(parseFloat(cssProperty(css, ".table-head", "font-size")) >= 12, "Column headers should remain at least 12px");
+  assert.ok(parseFloat(cssProperty(css, ".search input", "font-size")) >= 13, "Global search text should remain legible");
+  assert.ok(parseFloat(cssProperty(css, ".table-row", "min-height")) <= 48, "Regular rows must remain compact");
 });
 
-test("sizes the Statistics reactor cube around its active-node label", async () => {
-  const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-  assert.match(css, /\.statistics-page \.reactor-cube\{top:58px;width:148px;height:148px\}/);
-  assert.match(css, /\.statistics-page \.cube-front\{transform:translateZ\(74px\)\}/);
-  assert.match(css, /\.statistics-page \.cube-bottom\{transform:rotateX\(-90deg\) translateZ\(74px\)\}/);
-  assert.match(css, /\.statistics-page \.ring-two\{top:84px;width:276px;height:88px\}/);
-  assert.match(css, /\.statistics-page \.reactor-beam\{top:24px;width:144px;height:250px\}/);
+test("preserves detail identity, cryptographic input fields, and full output tables", async () => {
+  const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
+  for (const field of ["BLOCK HASH", "TRANSACTION HASH", "KEY IMAGE", "RING SIZE", "RING MEMBER / OUTPUT KEY", "SOURCE TX HASH", "OUTPUT KEY", "AMOUNT", "UNLOCK TIME / HEIGHT"]) {
+    assert.ok(page.includes(field), `Missing detail field: ${field}`);
+  }
+  assert.match(page, /detail\.inputs && detail\.inputs\.length > 0 && <section className="detail-inputs"/);
+  assert.match(page, /detail\.outputs && detail\.outputs\.length > 0 && <section className="detail-outputs"/);
+  assert.match(page, /output\.confidential \? "Confidential"/);
+  assert.match(page, /output\.amount == null \? "Not reported" : `\$\{atomicJude\(output\.amount\)\} JUDE`/);
+});
+
+test("the Statistics visual distinguishes an unknown count from verified zero and preserves actual counts", async () => {
+  const response = await render("/statistics");
+  const html = await response.text();
+  assert.match(html, /class="network-reactor stats-orbital/);
+  assert.match(html, /ACTIVE SERVICE NODES/);
+  assert.match(html, /aria-label="Awaiting a verified active Service Node count"/);
+  const source = await readProductionSource(new URL("../app/explorer/components/stat-network-visual.tsx", import.meta.url));
+  const compiled = ts.transpileModule(`${source}\nexport { StatNetworkVisual };`, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const testModule = { exports: {} };
+  vm.runInNewContext(compiled, { module: testModule, exports: testModule.exports, require: createRequire(import.meta.url) });
+  const { StatNetworkVisual } = testModule.exports;
+  const unknown = renderToStaticMarkup(React.createElement(StatNetworkVisual, { activeCount: null, connection: "loading" }));
+  assert.match(unknown, /class="notranslate" translate="no">—<\/strong>/);
+  assert.doesNotMatch(unknown, /aria-label="0 active service nodes"|Reported by mainnet/);
+  for (const activeCount of [0, 439]) {
+    for (const connection of ["live", "offline"]) {
+      const verified = renderToStaticMarkup(React.createElement(StatNetworkVisual, { activeCount, connection }));
+      assert.ok(verified.includes(`aria-label="${activeCount} active service nodes"`));
+      assert.ok(verified.includes(`class="notranslate" translate="no">${activeCount}</strong>`));
+      assert.ok(verified.includes(connection === "live" ? "Reported by mainnet" : "Last verified snapshot"));
+      assert.match(verified, /<svg[^>]*aria-hidden="true"/);
+    }
+  }
 });
 
 test("omits the internal global output index from visitor-facing detail tables", async () => {
@@ -729,12 +1020,12 @@ test("omits the internal global output index from visitor-facing detail tables",
     readProductionSource(new URL("../app/page.tsx", import.meta.url)),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
-  const outputTable = page.slice(page.indexOf('detail.outputs && <section className="detail-outputs"'), page.indexOf("</section>}", page.indexOf('detail.outputs && <section className="detail-outputs"')));
+  const outputTable = page.slice(page.indexOf('detail.outputs && detail.outputs.length > 0 && <section className="detail-outputs"'), page.indexOf("</section>}", page.indexOf('detail.outputs && detail.outputs.length > 0 && <section className="detail-outputs"')));
   assert.doesNotMatch(outputTable, /GLOBAL INDEX|output\.globalIndex/);
   assert.match(outputTable, /OUTPUT KEY/);
   assert.match(outputTable, /AMOUNT/);
-  assert.match(outputTable, /UNLOCK HEIGHT/);
-  assert.match(css, /\.detail-output-head,\.detail-output-row\{grid-template-columns:50px minmax\(380px,2\.8fr\) minmax\(120px,\.8fr\) minmax\(130px,\.8fr\)\}/);
+  assert.match(outputTable, /UNLOCK TIME \/ HEIGHT/);
+  assert.ok(cssProperty(css, ".detail-output-head", "grid-template-columns"));
 });
 
 test("uses clear, consistent titles across every detail page state", async () => {
@@ -752,9 +1043,9 @@ test("uses clear, consistent titles across every detail page state", async () =>
 
 test("opens every Transactions table row as Transaction Details", async () => {
   const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
-  const start = page.indexOf('<section className="stream shell" id="transactions">');
-  const end = page.indexOf("</section>", start);
-  const transactionSection = page.slice(start, end);
+  const tables = await readFile(new URL("../app/explorer/components/ledger-tables.tsx", import.meta.url), "utf8");
+  const transactionSection = tables.slice(tables.indexOf("export function TransactionRecords"));
+  assert.match(page, /<TransactionRecords transactions=\{homepageTransactions\} openTransaction=\{openTransaction\}/);
   assert.match(transactionSection, /className="table-row transaction-row-link"/);
   assert.match(transactionSection, /aria-label=\{`Open transaction \$\{tx\.hash\}`\}/);
   assert.match(transactionSection, /onClick=\{\(\) => openTransaction\(tx\.hash, tx\.txType\)\}/);
@@ -764,7 +1055,9 @@ test("opens every Transactions table row as Transaction Details", async () => {
 
 test("opens every Blocks table row as Block Details", async () => {
   const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
-  const blocksSection = page.slice(page.indexOf('id="blocks"'), page.indexOf('id="transactions"'));
+  const tables = await readFile(new URL("../app/explorer/components/ledger-tables.tsx", import.meta.url), "utf8");
+  const blocksSection = tables.slice(tables.indexOf("export function BlockRecords"), tables.indexOf("export function TransactionRecords"));
+  assert.match(page, /<BlockRecords blocks=\{homepageBlocks\} openBlock=\{openBlock\}/);
   assert.match(blocksSection, /className="table-row block-row-link"/);
   assert.match(blocksSection, /role="button" tabIndex=\{0\} aria-label=\{`Open block/);
   assert.match(blocksSection, /onClick=\{\(\) => openBlock\(block\.height\)\}/);
@@ -774,8 +1067,8 @@ test("opens every Blocks table row as Block Details", async () => {
 
 test("opens every Service Node ledger row as Service Node Details", async () => {
   const page = await readProductionSource(new URL("../app/page.tsx", import.meta.url));
-  const serviceNodePage = page.slice(page.indexOf("{serviceNodesOnly &&"), page.indexOf("<section className=\"quorum-section", page.indexOf("{serviceNodesOnly &&")));
-  const homepageNodes = page.slice(page.indexOf("home-service-nodes"), page.indexOf("<section className=\"privacy-panel", page.indexOf("home-service-nodes")));
+  const serviceNodePage = page.slice(page.indexOf("{serviceNodesOnly &&"), page.indexOf("<section className=\"staking home-service-nodes", page.indexOf("{serviceNodesOnly &&")));
+  const homepageNodes = page.slice(page.indexOf("home-service-nodes"), page.indexOf("<section className=\"quorum-section", page.indexOf("home-service-nodes")));
   assert.match(serviceNodePage, /className="table-row service-node-row-link notranslate" translate="no"/);
   assert.match(homepageNodes, /className="table-row service-node-row-link notranslate" translate="no"/);
   assert.match(serviceNodePage, /role="button" tabIndex=\{0\} aria-label=\{`Open Service Node/);
@@ -792,7 +1085,7 @@ test("keeps block-reward records out of Transaction Details", async () => {
   assert.match(transactionDetail, /title: "Transaction Details"/);
   assert.match(transactionDetail, /outputTitle: "Transaction Outputs"/);
   assert.match(transactionDetail, /TRANSACTION HASH/);
-  assert.match(transactionDetail, /FEE PER KB/);
+  assert.match(transactionDetail, /FEE RATE \(JUDE\/kB\)/);
   assert.doesNotMatch(transactionDetail, /Block Reward Transaction|BLOCK REWARD|SERVICE NODE WINNER|minerTransaction/);
 });
 
@@ -804,21 +1097,24 @@ test("uses the complete quorum summary row to expand its matrix", async () => {
   assert.match(quorumLedger, /<summary>/);
   assert.match(quorumLedger, /<span className="block-height quorum-height">\{compact\(record\.height\)\}<\/span>/);
   assert.doesNotMatch(quorumLedger, /openBlock\(record\.height\)/);
-  assert.match(quorumLedger, /EXPAND MATRIX →/);
-  assert.match(quorumLedger, /COLLAPSE MATRIX ↑/);
+  assert.match(quorumLedger, /className="expand-label">\{"EXPAND MATRIX →"\}/);
+  assert.match(quorumLedger, /className="collapse-label">\{"COLLAPSE MATRIX ↑"\}/);
+  assert.match(quorumLedger, /record\.validators\.map\([\s\S]*?onClick=\{\(\) => openServiceNode\(key\)\}/);
+  assert.match(quorumLedger, /record\.workers\.map\([\s\S]*?onClick=\{\(\) => openServiceNode\(key\)\}/);
 });
 
-test("mobile ledgers use one value scale across every record column", async () => {
+test("retains column grids across all current and historical ledgers", async () => {
   const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-  assert.match(css, /--mobile-ledger-value-size:13px/);
-  assert.match(css, /\.table-card \.table-row \.tx-hash,[\s\S]*\.table-card \.table-row \.node-key,[\s\S]*\.detail-output-row code,[\s\S]*\.quorum-key \{[\s\S]*font-size:var\(--mobile-ledger-value-size\)!important/);
-  assert.match(css, /\.table-card \.table-row,[\s\S]*\.quorum-record summary \{[\s\S]*align-items:center!important/);
+  for (const table of ["blocks-table", "tx-table", "pool-table", "nodes-table", "awaiting-live-table", "decommissioned-live-table", "deregistered-table", "unlock-detail-table", "decommission-detail-table"]) {
+    assert.ok(cssProperty(css, `.${table} .table-row`, "grid-template-columns"), `Missing column grid for ${table}`);
+  }
 });
 
-test("keeps every table heading one visual step above its row values", async () => {
+test("preserves all columns and uses local scrolling for detailed cryptographic ledgers", async () => {
   const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-  assert.match(css, /--mobile-ledger-heading-size:13\.5px/);
-  assert.match(css, /\.table-card \.table-head,[\s\S]*\.committee-matrix header > \* \{\s*font-size:14px!important;\s*font-weight:650!important/);
-  assert.match(css, /@media \(max-width:900px\) \{[\s\S]*\.committee-matrix header > \* \{\s*font-size:var\(--mobile-ledger-heading-size,13\.5px\)!important/);
-  assert.match(css, /--mobile-ledger-value-size:13px/);
+  assert.ok(cssProperty(css, ".detail-output-head", "grid-template-columns"));
+  assert.ok(cssProperty(css, ".ring-head", "grid-template-columns"));
+  assert.match(cssDeclarations(css, ".detail-output-table"), /overflow-x\s*:\s*auto/);
+  assert.match(cssDeclarations(css, ".ring-members"), /overflow-x\s*:\s*auto/);
+  assertNoHiddenColumnRules(css, ["detail-output-head", "detail-output-row", "ring-head", "ring-row"]);
 });

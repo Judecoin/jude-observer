@@ -1,9 +1,8 @@
-"use client";
+import ExplorerClient from "./explorer/client";
+import { readExplorerBootstrap } from "../worker/bootstrap-context";
 
-import { useExplorer } from "./explorer/use-explorer";
-import { ExplorerView } from "./explorer/components/explorer-view";
+export const dynamic = "force-dynamic";
 
-export default function Home({ serviceNodesOnly = false, statisticsOnly = false }: { serviceNodesOnly?: boolean; statisticsOnly?: boolean }) {
-  const explorer = useExplorer({ serviceNodesOnly, statisticsOnly });
-  return <ExplorerView {...explorer} />;
+export default function Home() {
+  return <ExplorerClient initialData={readExplorerBootstrap()} />;
 }
