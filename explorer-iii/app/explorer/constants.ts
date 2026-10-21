@@ -1,4 +1,5 @@
-export const JUDE_RELEASE_VERSION = "v3.2.0";
+export const JUDE_RELEASE_VERSION = "v4.0.0";
+export const EXPLORER_RELEASE_VERSION = "v1.0.33";
 
 export const TX_TYPE_META: Record<string, { label: string; icon?: string }> = {
   transfer: { label: "Transfer", icon: "/tx-types/transfer.png" }, registration: { label: "Registration", icon: "/tx-types/registration.png" },

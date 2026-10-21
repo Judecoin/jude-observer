@@ -1,6 +1,7 @@
 import type { RpcServiceNode, RpcInfo, RpcEnvelope, RpcMethods } from "./rpc-types";
 import { JUDECOIN_RPC_NODES } from "./constants";
 import { rpcFetchNode, rpcNodePreference, cachedRpcResult, rpcResponseCache } from "./rpc";
+import { buildUpgradeReadiness, normalizeNodeVersion } from "./fork";
 
 function serviceNodeTotalReserved(node: RpcServiceNode) {
   return (node.contributors || []).reduce(
@@ -108,6 +109,7 @@ export async function serviceNodeStatesRequest(requestedTip?: number) {
 
 export function buildServiceNodesSnapshot(currentServiceNodeStates: RpcServiceNode[], topHeight: number) {
   return {
+    upgradeReadiness: buildUpgradeReadiness(currentServiceNodeStates.map((node) => node.service_node_version)),
     total: currentServiceNodeStates.length,
     active: currentServiceNodeStates.filter((node) => node.active).length,
     funded: currentServiceNodeStates.filter((node) => node.funded).length,
@@ -135,7 +137,7 @@ export function buildServiceNodesSnapshot(currentServiceNodeStates: RpcServiceNo
         registeredAt: node.registration_height,
         lastRewardAt: node.last_reward_block_height,
         lastUptimeProof: node.last_uptime_proof,
-        version: node.service_node_version.join("."),
+        version: normalizeNodeVersion(node.service_node_version) ?? "Unknown",
         unlocking: node.requested_unlock_height > topHeight,
         unlockAt: Number(node.requested_unlock_height || 0),
         contributors: node.contributors?.length || 0,

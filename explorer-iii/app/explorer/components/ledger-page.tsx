@@ -39,11 +39,11 @@ export function LedgerPage({ ledger, blocksOnly, liveHeight, displayNow, query, 
       <button type="submit" disabled={searchLoading}>{searchLoading ? "SEARCHING" : "SEARCH"}<span>→</span></button>
     </form>
     {message && <div className="search-message" role="status">{message}</div>}
-    {error && <div className="ledger-error" role="alert"><span>{error}</span></div>}
+    {error && <div className={data ? "ledger-note" : "ledger-error"} role={data ? "status" : "alert"}><span>{data ? `Showing the last verified records. ${error}` : error}</span></div>}
     {blocksOnly
       ? <BlockRecords blocks={blocks} openBlock={openBlock} loadingMessage={loading ? "Fetching block records…" : undefined} />
       : <TransactionRecords transactions={transactions} openTransaction={openTransaction} loadingMessage={loading ? "Fetching transaction records…" : empty} />}
-    {data?.pendingDetails && <p className="ledger-note" role="status">{ledger.refreshing ? "Updating verified block details…" : "Some optional block details are unavailable from the current node."}</p>}
+    {data?.pendingDetails && <p className="ledger-note" role="status">{"Verified block headers are shown. Additional details update in the background."}</p>}
     {data?.scanLimited && <p className="ledger-note">{"This page reached its block range limit. Continue to older blocks to find more transactions."}</p>}
     <LedgerPagination ledger={ledger} label={title} latestHref={blocksOnly ? "/blocks" : "/transactions"} />
   </section>;

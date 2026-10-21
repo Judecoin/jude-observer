@@ -1,4 +1,6 @@
 import { useEffect, useRef, type CSSProperties } from "react";
+import Link from "next/link";
+import { NavigationLabel } from "./navigation-label";
 import type { useExplorer } from "../use-explorer";
 import {
   compact,
@@ -12,15 +14,16 @@ import {
   serviceNodeUnlockEstimate,
   isBlockHeightLabel,
 } from "../formatters";
-import { TX_TYPE_LEGEND, JUDE_RELEASE_VERSION } from "../constants";
+import { TX_TYPE_LEGEND, JUDE_RELEASE_VERSION, EXPLORER_RELEASE_VERSION } from "../constants";
 import { TxTypeBadge, PaginationControls, AwaitingContributionsPanel, DetailValue, IdentifierCell } from "./shared";
 import { UiIcon } from "./ui-icons";
 import { NetworkOverview } from "./network-visuals";
 import { StatNetworkVisual } from "./stat-network-visual";
+import { ForkMonitor } from "./fork-monitor";
 import { LedgerPage } from "./ledger-page";
 import { BlockRecords, LedgerPagination, TransactionRecords } from "./ledger-tables";
 
-export function ExplorerView({ serviceNodesOnly, statisticsOnly, blocksOnly, transactionsOnly, ledger, homepageBlockLedger, homepageTransactionLedger, homepageBlocks, homepageTransactions, homepageServiceNodePage, homepageServiceNodePageSize, homepageServiceNodeLastPage, setHomepageServiceNodePage, setHomepageServiceNodePageSize, search, query, setQuery, searchLoading, message, connection, liveNetwork, serviceNodes, transactionPool, openTransaction, blockPage, prefetchSnapshot, openBlock, snapshot, activeEnd, awaitingEnd, offlineEnd, statusTotal, activeServiceNodes, unlockingServiceNodes, awaitingServiceNodes, decommissionedServiceNodes, lockedDeregisteredServiceNodeTotal, currentServiceNodeTotal, stakingRatio, stakingRatioWidth, minedSupply, setLifecycleView, lifecycleView, setDeregisteredNodePage, deregisteredTotal, deregisteredIndexedThrough, deregisteredNodes, deregisteredNodePage, deregisteredNodeLastPage, deregisteredNodePageSize, setDeregisteredNodePageSize, serviceNodeHeight, openServiceNode, paginatedDeregisteredNodes, serviceNodeQuery, setServiceNodeQuery, setServiceNodePage, filteredServiceNodes, awaitingServiceNodeRows, paginatedServiceNodes, serviceNodePage, serviceNodeLastPage, serviceNodePageSize, setServiceNodePageSize, latestQuorum, quorumPage, quorums, quorumPageSize, quorumLoading, changeQuorumPage, changeQuorumPageSize, homepageServiceNodes, detailPending, closeDetail, detail, detailBackdropRef, detailRenderKey, displayNow }: ReturnType<typeof useExplorer>) {
+export function ExplorerView({ serviceNodeStatus, serviceNodeObservedAt, serviceNodesOnly, statisticsOnly, blocksOnly, transactionsOnly, ledger, homepageBlockLedger, homepageTransactionLedger, homepageBlocks, homepageTransactions, homepageServiceNodePage, homepageServiceNodePageSize, homepageServiceNodeLastPage, setHomepageServiceNodePage, setHomepageServiceNodePageSize, search, query, setQuery, searchLoading, message, connection, liveNetwork, serviceNodes, transactionPool, openTransaction, blockPage, prefetchSnapshot, openBlock, snapshot, activeEnd, awaitingEnd, offlineEnd, statusTotal, activeServiceNodes, unlockingServiceNodes, awaitingServiceNodes, decommissionedServiceNodes, lockedDeregisteredServiceNodeTotal, currentServiceNodeTotal, stakingRatio, stakingRatioWidth, minedSupply, setLifecycleView, lifecycleView, setDeregisteredNodePage, deregisteredTotal, deregisteredIndexedThrough, deregisteredNodes, deregisteredNodePage, deregisteredNodeLastPage, deregisteredNodePageSize, setDeregisteredNodePageSize, serviceNodeHeight, openServiceNode, paginatedDeregisteredNodes, serviceNodeQuery, setServiceNodeQuery, setServiceNodePage, filteredServiceNodes, awaitingServiceNodeRows, paginatedServiceNodes, serviceNodePage, serviceNodeLastPage, serviceNodePageSize, setServiceNodePageSize, latestQuorum, quorumPage, quorums, quorumPageSize, quorumLoading, changeQuorumPage, changeQuorumPageSize, homepageServiceNodes, detailPending, closeDetail, detail, detailBackdropRef, detailRenderKey, displayNow }: ReturnType<typeof useExplorer>) {
   const homeOnly = !serviceNodesOnly && !statisticsOnly && !blocksOnly && !transactionsOnly;
   const ProductTitle = homeOnly ? "h1" : "span";
   const hasOutputUnlock = Boolean(detail?.outputs?.some((output) => Number.isFinite(output.unlockHeight) && output.unlockHeight > 0));
@@ -57,16 +60,16 @@ export function ExplorerView({ serviceNodesOnly, statisticsOnly, blocksOnly, tra
       </div>
 
       <nav className="nav shell" aria-label="Primary navigation">
-        <a className="brand" href="/" aria-label="Judecoin Explorer home" onClick={closeDetail}>
+        <Link prefetch={true} className="brand" href="/" aria-label="Judecoin Explorer home" onClick={closeDetail}>
           <span className="brand-mark"><img src="/judecoin-logo-minimal-ring-transparent.png" alt="" /></span>
           <ProductTitle className="nav-product-title" aria-label="Judecoin Blockchain Explorer"><b>{"Judecoin"}</b>{" "}<span>{"Blockchain Explorer"}</span></ProductTitle>
-        </a>
+        </Link>
         <div className="nav-links">
-          <a className={homeOnly ? "active" : undefined} href="/" aria-label="Home" aria-current={homeOnly ? "page" : undefined} onClick={closeDetail}>{"Home"}</a>
-          <a className={serviceNodesOnly ? "active" : undefined} href="/service-nodes" aria-label="Service Nodes" aria-current={serviceNodesOnly ? "page" : undefined} onClick={closeDetail}>{"Service Nodes"}</a>
-          <a className={statisticsOnly ? "active" : undefined} href="/statistics" aria-label="Statistics" aria-current={statisticsOnly ? "page" : undefined} onClick={closeDetail}>{"Statistics"}</a>
-          <a className={blocksOnly ? "active" : undefined} href="/blocks" aria-label="Blocks" aria-current={blocksOnly ? "page" : undefined} onClick={closeDetail}>{"Blocks"}</a>
-          <a className={transactionsOnly ? "active" : undefined} href="/transactions" aria-label="Transactions" aria-current={transactionsOnly ? "page" : undefined} onClick={closeDetail}>{"Transactions"}</a>
+          <Link prefetch={true} className={homeOnly ? "active" : undefined} href="/" aria-label="Home" aria-current={homeOnly ? "page" : undefined} onClick={closeDetail}><NavigationLabel>{"Home"}</NavigationLabel></Link>
+          <Link prefetch={true} className={serviceNodesOnly ? "active" : undefined} href="/service-nodes" aria-label="Service Nodes" aria-current={serviceNodesOnly ? "page" : undefined} onClick={closeDetail}><NavigationLabel>{"Service Nodes"}</NavigationLabel></Link>
+          <Link prefetch={true} className={statisticsOnly ? "active" : undefined} href="/statistics" aria-label="Statistics" aria-current={statisticsOnly ? "page" : undefined} onClick={closeDetail}><NavigationLabel>{"Statistics"}</NavigationLabel></Link>
+          <Link prefetch={true} className={blocksOnly ? "active" : undefined} href="/blocks" aria-label="Blocks" aria-current={blocksOnly ? "page" : undefined} onClick={closeDetail}><NavigationLabel>{"Blocks"}</NavigationLabel></Link>
+          <Link prefetch={true} className={transactionsOnly ? "active" : undefined} href="/transactions" aria-label="Transactions" aria-current={transactionsOnly ? "page" : undefined} onClick={closeDetail}><NavigationLabel>{"Transactions"}</NavigationLabel></Link>
         </div>
       </nav>
 
@@ -85,6 +88,8 @@ export function ExplorerView({ serviceNodesOnly, statisticsOnly, blocksOnly, tra
       </section>
 
       <NetworkOverview network={liveNetwork} serviceNodes={serviceNodes} snapshot={snapshot} latestQuorum={latestQuorum} connection={connection} displayNow={displayNow} blockPage={blockPage} openBlock={openBlock} openServiceNode={openServiceNode} />
+
+      <ForkMonitor summaryOnly network={liveNetwork} serviceNodes={serviceNodes} observedAt={serviceNodeObservedAt} observationHeight={serviceNodeHeight} connection={connection} displayNow={displayNow} openBlock={openBlock} openServiceNode={openServiceNode} />
 
       <section className="tx-type-legend shell" aria-label="Transaction type legend">
         <div className="tx-type-legend-title"><span>{"Transaction Type Legend"}</span></div>
@@ -113,17 +118,17 @@ export function ExplorerView({ serviceNodesOnly, statisticsOnly, blocksOnly, tra
 
       <section className={`stream shell ${transactionPool?.available && transactionPool.count ? "" : "first-data-section"}`}>
         <div className="section-heading" id="blocks">
-          <div><h2>{"Latest Blocks"}</h2></div><a className="section-link" href="/blocks">{"VIEW ALL BLOCKS →"}</a>
+          <div><h2>{"Latest Blocks"}</h2></div><Link prefetch={true} className="section-link" href="/blocks">{"VIEW ALL BLOCKS →"}</Link>
         </div>
-        <BlockRecords blocks={homepageBlocks} openBlock={openBlock} loadingMessage={homepageBlockLedger.loading ? "Fetching block records…" : homepageBlockLedger.error || undefined} />
+        <BlockRecords blocks={homepageBlocks} openBlock={openBlock} loadingMessage={!homepageBlockLedger.data ? homepageBlockLedger.error || "Fetching block records…" : undefined} />
         <LedgerPagination ledger={homepageBlockLedger} label="Blocks" latestHref="/#blocks" />
       </section>
 
       <section className="stream shell" id="transactions">
         <div className="section-heading">
-          <div><h2>{"Latest Transactions"}</h2></div><a className="section-link" href="/transactions">{"VIEW ALL TRANSACTIONS →"}</a>
+          <div><h2>{"Latest Transactions"}</h2></div><Link prefetch={true} className="section-link" href="/transactions">{"VIEW ALL TRANSACTIONS →"}</Link>
         </div>
-        <TransactionRecords transactions={homepageTransactions} openTransaction={openTransaction} loadingMessage={homepageTransactionLedger.loading ? "Fetching transaction records…" : homepageTransactionLedger.error || (homepageTransactionLedger.data?.rows.length === 0 ? homepageTransactionLedger.data.hasMore ? "No transactions in this block range. Continue to older blocks." : "No more confirmed transactions in this history." : undefined)} />
+        <TransactionRecords transactions={homepageTransactions} openTransaction={openTransaction} loadingMessage={!homepageTransactionLedger.data ? homepageTransactionLedger.error || "Fetching transaction records…" : homepageTransactionLedger.data.rows.length === 0 ? homepageTransactionLedger.data.hasMore ? "No transactions in this block range. Continue to older blocks." : "No more confirmed transactions in this history." : undefined} />
         <LedgerPagination ledger={homepageTransactionLedger} label="Transactions" latestHref="/#transactions" />
       </section>
       </>}
@@ -141,10 +146,12 @@ export function ExplorerView({ serviceNodesOnly, statisticsOnly, blocksOnly, tra
 
         <div className="statistics-primary-grid">
           <article className="stat-command stat-height"><small>{"CHAIN HEIGHT"}</small><strong className="block-height notranslate" translate="no">{liveNetwork ? compact(liveNetwork.height) : "—"}</strong></article>
-          <article className="stat-command"><small>{"NETWORK HASH RATE"}</small><strong className="notranslate" translate="no">{liveNetwork ? `${(liveNetwork.hashrate / 1e3).toFixed(2)} kH/s` : "—"}</strong></article>
+          <article className="stat-command"><small>{liveNetwork?.fork?.phase === "activated" ? "CONSENSUS" : "NETWORK HASH RATE"}</small><strong className="notranslate" translate="no">{liveNetwork?.fork?.phase === "activated" ? "Pure PoS" : liveNetwork ? `${(liveNetwork.hashrate / 1e3).toFixed(2)} kH/s` : "—"}</strong></article>
           <article className="stat-command"><small>{"NETWORK DIFFICULTY"}</small><strong className="notranslate" translate="no">{liveNetwork ? difficulty(liveNetwork.difficulty) : "—"}</strong></article>
           <article className="stat-command"><small>{"PENDING TRANSACTIONS"}</small><strong className="notranslate" translate="no">{transactionPool?.available ? compact(transactionPool.count) : "—"}</strong></article>
         </div>
+
+        <ForkMonitor embedded network={liveNetwork} serviceNodes={serviceNodes} observedAt={serviceNodeObservedAt} observationHeight={serviceNodeHeight} connection={connection} displayNow={displayNow} openBlock={openBlock} openServiceNode={openServiceNode} />
 
         <div className="statistics-dashboard">
           <section className="stats-panel node-health-panel">
@@ -311,7 +318,7 @@ export function ExplorerView({ serviceNodesOnly, statisticsOnly, blocksOnly, tra
               <span>{node.version}</span>
             </div>
           ))}
-          {!serviceNodes && <div className="nodes-loading notranslate" translate="no">{"Awaiting service node data"}</div>}
+          {!serviceNodes && <div className="nodes-loading notranslate" translate="no">{serviceNodeStatus === "offline" ? "Service Node data is temporarily unavailable. Retrying automatically." : "Awaiting service node data"}</div>}
           {serviceNodes && filteredServiceNodes.length === 0 && <div className="nodes-loading">No Service Node public key matches this search.</div>}
         </div>
         <div className="table-pagination">
@@ -373,7 +380,7 @@ export function ExplorerView({ serviceNodesOnly, statisticsOnly, blocksOnly, tra
               <span>{node.version}</span>
             </div>
           ))}
-          {!serviceNodes && <div className="nodes-loading notranslate" translate="no">{"Awaiting service node data"}</div>}
+          {!serviceNodes && <div className="nodes-loading notranslate" translate="no">{serviceNodeStatus === "offline" ? "Service Node data is temporarily unavailable. Retrying automatically." : "Awaiting service node data"}</div>}
         </div>
         <div className="table-pagination">
           <PaginationControls page={homepageServiceNodePage} lastPage={homepageServiceNodeLastPage} pageSize={homepageServiceNodePageSize} loading={!serviceNodes} onPageChange={setHomepageServiceNodePage} onPageSizeChange={(size) => { setHomepageServiceNodePageSize(size); setHomepageServiceNodePage(0); }} />
@@ -448,7 +455,7 @@ export function ExplorerView({ serviceNodesOnly, statisticsOnly, blocksOnly, tra
 
       </>}
 
-      <footer className="shell explorer-footer"><a className="brand" href="https://judeblock.io/" aria-label="Judecoin Blockchain Explorer home" onClick={closeDetail}><span className="brand-mark"><img src="/judecoin-logo-minimal-ring-transparent.png" alt="" /></span><span><b>{"Judecoin"}</b>{" "}<small>{"Blockchain Explorer"}</small></span></a><div className="footer-meta"><a className="footer-github" href="https://github.com/judecoin" target="_blank" rel="noreferrer" aria-label="Judecoin on GitHub" title="Judecoin on GitHub"><svg viewBox="0 0 24 24" width="21" height="21" fill="currentColor" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg></a><span className="footer-version"><span>{"Jude Version:"}</span>{" "}<b>{JUDE_RELEASE_VERSION}</b></span></div></footer>
+      <footer className="shell explorer-footer"><a className="brand" href="https://judeblock.io/" aria-label="Judecoin Blockchain Explorer home" onClick={closeDetail}><span className="brand-mark"><img src="/judecoin-logo-minimal-ring-transparent.png" alt="" /></span><span><b>{"Judecoin"}</b>{" "}<small>{"Blockchain Explorer"}</small></span></a><div className="footer-meta"><a className="footer-github" href="https://github.com/judecoin" target="_blank" rel="noreferrer" aria-label="Judecoin on GitHub" title="Judecoin on GitHub"><svg viewBox="0 0 24 24" width="21" height="21" fill="currentColor" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg></a><span className="footer-version"><span>{"Core release"}</span>{" "}<b>{JUDE_RELEASE_VERSION}</b></span><span className="footer-version"><span>{"Network protocol"}</span><b>{liveNetwork ? `v${liveNetwork.hardFork}` : "—"}</b></span><span className="footer-version"><span>{"Explorer"}</span><b>{EXPLORER_RELEASE_VERSION}</b></span></div></footer>
 
       </div>
 

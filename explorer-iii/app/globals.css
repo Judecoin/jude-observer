@@ -1,3 +1,4 @@
+@import "./explorer/components/fork-monitor.css";
 @import "tailwindcss";
 
 :root { --bg:#030807; --panel:#081311; --surface:#0a1815; --line:rgba(112,255,202,.14); --line-strong:rgba(112,255,202,.28); --muted:#849b95; --text:#edf8f3; --green:#24e7a2; --green2:#79ffda; --cyan:#52e8d2; --record-table-font-size:15.625px; }
@@ -3243,7 +3244,6 @@ h1 em {
 .deregistered-table .table-row>*{white-space:normal;line-height:1.4}
 .deregistered-table .unlock-date{font-size:12px;color:#829890}
 
-/* v1.0.16 clarity: original palette, navigation, grids and panels are retained. */
 :root {
   --record-table-font-size:13.5px;
   --mobile-ledger-heading-size:12px;
@@ -3382,7 +3382,6 @@ main .workspace-content .deregistered-table .table-row { min-height:44px!importa
   .section-heading h2 { font-size:23px!important; }
 }
 
-/* v1.0.16: refine the original effects without changing geometry or layout. */
 .hero::before {
   pointer-events:none;
   background:
@@ -3469,7 +3468,6 @@ main .workspace-content .deregistered-table .table-row { min-height:44px!importa
   .holo-stage::before,.holo-beam { opacity:.5; }
 }
 
-/* v1.0.17: restore the approved network visual in its existing homepage position. */
 .network-overview { --subtle:var(--text-muted); --muted:var(--text-muted); }
 .network-overview .network-bento { display: grid !important; grid-template-columns: 1.25fr 1fr !important; gap: 16px !important; }
 .network-overview .overview-chain, .network-overview .overview-quorum { min-width: 0 !important; padding: 18px 22px !important; border: 1px solid var(--line-strong) !important; border-radius: 14px !important; background: linear-gradient(145deg,#142b1bba,#0b1713ec 58%) !important; box-shadow: inset 0 1px #c7f6a918,0 16px 50px #0003 !important; position: relative !important; overflow: hidden !important; }
@@ -3873,7 +3871,6 @@ main .workspace-content .deregistered-table .table-row { min-height:44px!importa
   .quorum-section .quorum-summary-console .quorum-metrics article:nth-child(2) { border-left:0!important; padding-left:0!important; }
 }
 
-/* v1.0.18: a readable product name and a quiet, human manifesto. */
 .statistics-page .stats-orbital:hover .stats-orbit-flow,
 .statistics-page .stats-orbital:focus-within .stats-orbit-flow,
 .statistics-page:focus-within .stats-orbit-flow,
@@ -4079,7 +4076,6 @@ main .workspace-content .table-card .table-head > *,
 }
 .explorer-footer .brand small { display:block!important; }
 
-/* v1.0.19 footer: project source and current Core release. */
 .explorer-footer .footer-meta { font-family:var(--font-ui)!important; letter-spacing:0!important; gap:18px!important; }
 .explorer-footer .footer-meta .footer-github { display:inline-flex; align-items:center; justify-content:center; width:36px; height:36px; padding:0; border:1px solid var(--line); border-radius:9px; color:var(--text-secondary); background:rgba(112,255,202,.025); transition:color .16s ease,border-color .16s ease,background .16s ease; }
 .explorer-footer .footer-meta .footer-github:hover { color:var(--green2); border-color:var(--line-strong); background:rgba(112,255,202,.07); }
@@ -4238,3 +4234,8 @@ main .workspace-content .decommissioned-live-table .table-row { column-gap:12px!
   .ledger-page-header p { font-size:13px; line-height:1.6; }
   .ledger-live-height { align-self:flex-end; }
 }
+
+.nav-links:has([data-navigation-pending="true"]) > a.active { color:var(--text-secondary); }
+.nav-links:has([data-navigation-pending="true"]) > a.active::after { left:50%; right:50%; }
+.nav-links > a:has([data-navigation-pending="true"]) { color:var(--green2); }
+.nav-links > a:has([data-navigation-pending="true"])::after { left:0; right:0; }

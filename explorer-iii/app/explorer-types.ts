@@ -49,7 +49,46 @@ export type AwaitingServiceNode = {
   unlockAt: number;
 };
 
+export type UpgradeReadiness = {
+  targetVersion: string;
+  eligibleTotal: number;
+  upgraded: number;
+  pending: number;
+  unknown: number;
+  percentage: number | null;
+  versions: Array<{ version: string; count: number }>;
+  scope: "registered-service-nodes";
+};
+
+export type ForkObservation = {
+  height: number;
+  observedAt: string;
+  source: string;
+  readiness: UpgradeReadiness;
+};
+
+export type ForkArchiveSnapshot = {
+  available: boolean;
+  preFork: ForkObservation | null;
+  exactClosingSnapshot: boolean;
+};
+
+export type ForkSnapshot = {
+  activationHeight: number;
+  targetProtocol: number | null;
+  targetVersion: string;
+  currentProtocol: number;
+  phase: "scheduled" | "activated" | "unverified";
+  blocksRemaining: number;
+  blocksSinceActivation: number;
+  estimatedActivationAt: string | null;
+  observedAt: string;
+  activationBlock: { height: number; hash: string; timestamp: number; protocol: number } | null;
+};
+
 export type ServiceNodesSnapshot = {
+  upgradeReadiness?: UpgradeReadiness;
+  forkArchive?: ForkArchiveSnapshot;
   total: number;
   active: number;
   funded: number;
@@ -109,6 +148,7 @@ export type ChainSnapshot = {
     hashrate: number;
     hardFork: number;
     protocol: string;
+    fork?: ForkSnapshot;
     txPoolSize: number;
     blockSizeMedian: number;
     blockSizeLimit: number;

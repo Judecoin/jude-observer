@@ -185,7 +185,10 @@ function firstRenderFixture() {
     [bootstrapKey("quorums", { pageSize: "10", latest: "1" }), quorums],
     [bootstrapKey("transactionPool"), transactionPool],
     [bootstrapKey("chain", { blockPage: "0", transactionPage: "0", blockPageSize: "10", transactionPageSize: "10" }), chain],
+    [bootstrapKey("chain", { blockPage: "0", transactionPage: "0", blockPageSize: "10", transactionPageSize: "10", overview: "1" }), chain],
     [bootstrapKey("blocks", { pageSize: "10" }), blocks], [bootstrapKey("transactions", { pageSize: "10" }), transactions],
+    [bootstrapKey("blocks", { pageSize: "50" }), ledger("blocks", 50)],
+    [bootstrapKey("transactions", { pageSize: "50" }), ledger("transactions", 50)],
   ].map(([key, data]) => [key, Response.json(data)]);
   return { height, nodes, network, ledger, cursor, homeEntries };
 }
@@ -331,8 +334,8 @@ test("never server-renders fabricated fallback chain data", async () => {
   assert.doesNotMatch(html, /\bRPC\b/i);
   assert.match(page, /const homepageBlocks: Block\[\] = \(\(homepageBlockLedger\.data as BlocksPageSnapshot \| null\)\?\.rows \?\? \[\]\)\.map/);
   assert.match(page, /const homepageTransactions: Transaction\[\] = \(\(homepageTransactionLedger\.data as TransactionsPageSnapshot \| null\)\?\.rows \?\? \[\]\)\.map/);
-  assert.match(page, /loadingMessage=\{homepageBlockLedger\.loading \? "Fetching block records…" : homepageBlockLedger\.error \|\| undefined\}/);
-  assert.match(page, /loadingMessage=\{homepageTransactionLedger\.loading \? "Fetching transaction records…" : homepageTransactionLedger\.error \|\|/);
+  assert.match(page, /loadingMessage=\{!homepageBlockLedger\.data \? homepageBlockLedger\.error \|\| "Fetching block records…" : undefined\}/);
+  assert.match(page, /loadingMessage=\{!homepageTransactionLedger\.data \? homepageTransactionLedger\.error \|\| "Fetching transaction records…"/);
 });
 
 test("renders an accurate statistics command center", async () => {
@@ -399,7 +402,8 @@ test("keeps the complete primary navigation and groups Statistics after Service 
     const routeHtml = await (await render(route)).text();
     assert.ok(new RegExp(`aria-label="${destination}"[^>]*aria-current="page"`).test(routeHtml));
   }
-  assert.doesNotMatch(page, /import Link from "next\/link"/);
+  assert.match(page, /<Link prefetch=\{true\}[^>]*href="\/service-nodes"/);
+  assert.match(page, /<NavigationLabel>\{"Statistics"\}<\/NavigationLabel>/);
   const quorumIndex = page.indexOf('id="quorums"');
   const homeServiceNodesIndex = page.indexOf('id="home-service-nodes"');
   assert.ok(homeServiceNodesIndex >= 0 && quorumIndex > homeServiceNodesIndex);
@@ -598,7 +602,7 @@ test("serves the last verified chain snapshot immediately while refreshing it in
   assert.match(worker, /serviceNodesHeight: null/);
   assert.match(worker, /serviceNodes: null/);
   assert.match(worker, /get_tx_hashes: true/);
-  assert.match(worker, /Promise\.all\(\[[\s\S]*emissionSnapshotPromise,[\s\S]*latestBlockDetailsPromise,[\s\S]*transactionDetailsPromise/);
+  assert.match(worker, /Promise\.all\(\[[\s\S]*emissionSnapshotPromise,[\s\S]*transactionDetailsPromise,[\s\S]*legacyDetailsPromise/);
   assert.doesNotMatch(worker, /const quorumSnapshotPromise = quorumPageSnapshot/);
   assert.match(worker, /return capture\("chain", cachedChainResponse\(request, url, ctx\)\)/);
 });
@@ -618,7 +622,8 @@ test("hides unavailable fields across service-node detail states", async () => {
   assert.match(page, /const displayedDetail = useMemo/);
   assert.doesNotMatch(detail, /Removed from current RPC state|Not retained in the current historical index|Awaiting current chain height|Awaiting network timing|Never \/ not provided|Node did not provide/);
   assert.match(worker, /publicEndpoint: node\.public_ip \? \[node\.public_ip, node\.quorumnet_port\]\.filter\(Boolean\)\.join\(":"\) : null/);
-  assert.doesNotMatch(worker, /publicEndpoint:.*Not published|version:.*Unknown/);
+  const detailRoute = await readFile(new URL("../worker/routes/service-node.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(detailRoute, /publicEndpoint:.*Not published|version:.*Unknown/);
 });
 
 test("preserves authoritative transaction classification and multi-node pool validation", async () => {
@@ -818,13 +823,14 @@ test("serves one strict real-time Service Node definition with private browser c
   assert.match(worker, /createServiceNodesLiveResponse\(new URL\(url\.toString\(\)\)\)/);
   assert.match(worker, /serviceNodesHeight: null/);
   assert.match(worker, /return noStoreResponse\(stored\)/);
-  assert.match(worker, /return capture\("serviceNodes", cachedServiceNodesLiveResponse\(url, ctx\)\)/);
+  assert.match(worker, /cachedServiceNodesLiveResponse\(url, ctx\)\.then\(\(response\) => attachForkArchive\(response, env, ctx\)\)/);
   assert.match(builder, /active: currentServiceNodeStates\.filter\(\(node\) => node\.active\)\.length/);
   assert.match(builder, /active: node\.active/);
   assert.doesNotMatch(builder, /Boolean\(node\.active\)|loading/i);
   assert.match(page, /const chainServiceNodesSnapshot: ServiceNodesLiveSnapshot \| null = snapshot\?\.serviceNodes && snapshot\.serviceNodesHeight != null \? \{/);
   assert.match(page, /const selectedServiceNodesSnapshot = !serviceNodesLive[\s\S]*isNewerHeightSnapshot\([\s\S]*chainServiceNodesSnapshot\.height[\s\S]*serviceNodesLive\.height/);
-  assert.match(page, /const serviceNodes = selectedServiceNodesSnapshot\?\.serviceNodes \?\? null/);
+  assert.match(page, /const selectedNodes = selectedServiceNodesSnapshot\?\.serviceNodes \?\? null/);
+  assert.match(page, /forkArchive: liveForkArchive \?\? selectedNodes\.forkArchive/);
   assert.match(page, /const serviceNodeHeight = selectedServiceNodesSnapshot\?\.height \?\? 0/);
   assert.match(page, /\{"ACTIVE SERVICE NODES"\}<\/small><strong className="notranslate" translate="no">\{serviceNodes \? compact\(serviceNodes\.active\) : "—"\}/);
   assert.doesNotMatch(page, /Loading Service Nodes|Loading live Service Node data|Loading nodes/);
@@ -847,7 +853,7 @@ test("selects the trusted newest complete Service Node snapshot and keeps its ma
   assert.match(selection, /isProvisionalSnapshot\(chainServiceNodesSnapshot\) === isProvisionalSnapshot\(serviceNodesLive\) && isNewerHeightSnapshot\(/);
   assert.match(selection, /chainServiceNodesSnapshot\.height, chainServiceNodesSnapshot\.fetchedAt,[\s\S]*serviceNodesLive\.height, serviceNodesLive\.fetchedAt/);
   assert.match(selection, /\? serviceNodesLive : chainServiceNodesSnapshot/);
-  assert.match(selection, /const serviceNodes = selectedServiceNodesSnapshot\?\.serviceNodes \?\? null/);
+  assert.match(selection, /const selectedNodes = selectedServiceNodesSnapshot\?\.serviceNodes \?\? null/);
   assert.match(page, /const serviceNodeHeight = selectedServiceNodesSnapshot\?\.height \?\? 0/);
   assert.doesNotMatch(selection, /serviceNodesLive\?\.serviceNodes \?\? snapshot\?\.serviceNodes/);
 });

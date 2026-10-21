@@ -61,6 +61,7 @@ export function useExplorer({ serviceNodesOnly = false, statisticsOnly = false, 
   }, []);
   const [query, setQuery] = useState("");
   const [serviceNodeQuery, setServiceNodeQuery] = useState("");
+  const [serviceNodeStatus, setServiceNodeStatus] = useState<"loading" | "live" | "offline">(() => initialData?.serviceNodes ? "live" : "loading");
   const [message, setMessage] = useState("");
   const [searchLoading, setSearchLoading] = useState(false);
   const [snapshot, setSnapshot] = useState<ChainSnapshot | null>(() => initialData?.chain ?? null);
@@ -68,7 +69,8 @@ export function useExplorer({ serviceNodesOnly = false, statisticsOnly = false, 
   const [networkPreview, setNetworkPreview] = useState<NetworkPreview | null>(() => initialData?.network ?? lastVerifiedNetworkPreview);
   const [transactionPoolSnapshot, setTransactionPoolSnapshot] = useState<TransactionPoolSnapshot | null>(() => initialData?.transactionPool ?? null);
   const [quorumLiveSnapshot, setQuorumLiveSnapshot] = useState<QuorumSnapshot | null>(() => initialData?.quorums ?? lastVerifiedQuorumSnapshot);
-  const [connection, setConnection] = useState<"loading" | "live" | "offline">(() => initialData && Object.values(initialData).some((value) => value && typeof value === "object" && "live" in value && value.live === true) ? "live" : "loading");
+  const [connection, setConnection] = useState<"loading" | "live" | "offline">(() => initialData?.network?.live === true && initialData.renderedAt != null
+    && initialData.renderedAt - Date.parse(initialData.network.fetchedAt) <= 90_000 ? "live" : "loading");
   const [blockPage, setBlockPage] = useState(0);
   const [transactionPage, setTransactionPage] = useState(0);
   const [quorumPage, setQuorumPage] = useState(initialData?.quorums?.page ?? 0);
@@ -142,7 +144,7 @@ export function useExplorer({ serviceNodesOnly = false, statisticsOnly = false, 
   usePoolRefresh({ serviceNodesOnly: serviceNodesOnly || ledgerOnly, setTransactionPoolSnapshot });
   useChainRefresh({ serviceNodesOnly: serviceNodesOnly || ledgerOnly, pageSizePreferencesLoaded, snapshotParams, highestKnownHeightRef, setSnapshot, setServiceNodesLive, setConnection, blockPage: homeOnly ? 0 : blockPage, blockPageSize: homeOnly ? 10 : blockPageSize, transactionPage: homeOnly ? 0 : transactionPage, transactionPageSize: homeOnly ? 10 : transactionPageSize, snapshot, knownChainHeight, successPollDelayMs: homeOnly ? 30_000 : undefined, overviewOnly: homeOnly });
 
-  useServiceNodeRefresh({ enabled: !ledgerOnly, highestKnownHeightRef, setServiceNodesLive, serviceNodeRefreshRef });
+  useServiceNodeRefresh({ enabled: !ledgerOnly, highestKnownHeightRef, setServiceNodesLive, serviceNodeRefreshRef, setServiceNodeStatus });
 
   useEffect(() => {
     if (initialData) return;
@@ -253,7 +255,13 @@ export function useExplorer({ serviceNodesOnly = false, statisticsOnly = false, 
       chainServiceNodesSnapshot.height, chainServiceNodesSnapshot.fetchedAt,
       serviceNodesLive.height, serviceNodesLive.fetchedAt,
     )) ? serviceNodesLive : chainServiceNodesSnapshot;
-  const serviceNodes = selectedServiceNodesSnapshot?.serviceNodes ?? null;
+  const selectedNodes = selectedServiceNodesSnapshot?.serviceNodes ?? null;
+  const serviceNodeObservedAt = selectedServiceNodesSnapshot?.fetchedAt ?? null;
+  const liveForkArchive = serviceNodesLive?.serviceNodes.forkArchive;
+  const serviceNodes = useMemo(() => selectedNodes ? {
+    ...selectedNodes,
+    forkArchive: liveForkArchive ?? selectedNodes.forkArchive,
+  } : null, [selectedNodes, liveForkArchive]);
   const selectedLiveQuorums = quorumLiveSnapshot?.page === quorumPage
     && quorumLiveSnapshot.pageSize === quorumPageSize ? quorumLiveSnapshot : null;
   const selectedChainQuorums = snapshot?.quorums.page === quorumPage
@@ -354,5 +362,5 @@ export function useExplorer({ serviceNodesOnly = false, statisticsOnly = false, 
   }, [statisticsOnly, serviceNodes, lifecycleInitialized]);
   const { detail, detailPending, detailRenderKey, detailBackdropRef, openBlock, openTransaction, openServiceNode, closeDetail, search } = useDetails({ liveNetwork, serviceNodeHeight, query, setMessage, setSearchLoading, searchScope: blocksOnly ? "block" : transactionsOnly ? "transaction" : undefined });
 
-  return { displayNow, serviceNodesOnly, statisticsOnly, blocksOnly, transactionsOnly, ledger, homepageBlockLedger, homepageTransactionLedger, homepageBlocks, homepageTransactions, homepageServiceNodePage, homepageServiceNodePageSize, homepageServiceNodeLastPage, setHomepageServiceNodePage, setHomepageServiceNodePageSize, openSection, search, query, setQuery, searchLoading, message, connection, liveNetwork, serviceNodes, transactionPool, openTransaction, blockPage, blockPageSize, setBlockPage, setBlockPageSize, prefetchSnapshot, blocks, openBlock, snapshot, blocksSelectionMatches, transactionPage, transactionPageSize, setTransactionPage, setTransactionPageSize, transactions, transactionsSelectionMatches, activeEnd, awaitingEnd, offlineEnd, statusTotal, activeServiceNodes, unlockingServiceNodes, awaitingServiceNodes, decommissionedServiceNodes, lockedDeregisteredServiceNodeTotal, currentServiceNodeTotal, stakingRatio, stakingRatioWidth, minedSupply, setLifecycleView, lifecycleView, setDeregisteredNodePage, deregisteredTotal, deregisteredIndexedThrough, deregisteredNodes, deregisteredNodePage, deregisteredNodeLastPage, deregisteredNodePageSize, setDeregisteredNodePageSize, serviceNodeHeight, openServiceNode, paginatedDeregisteredNodes, serviceNodeQuery, setServiceNodeQuery, setServiceNodePage, filteredServiceNodes, awaitingServiceNodeRows, paginatedServiceNodes, serviceNodePage, serviceNodeLastPage, serviceNodePageSize, setServiceNodePageSize, latestQuorum, quorumPage, quorums, quorumPageSize, quorumLoading, changeQuorumPage, changeQuorumPageSize, homepageServiceNodes, detailPending, closeDetail, detail, detailBackdropRef, detailRenderKey };
+  return { displayNow, serviceNodeStatus, serviceNodeObservedAt, serviceNodesOnly, statisticsOnly, blocksOnly, transactionsOnly, ledger, homepageBlockLedger, homepageTransactionLedger, homepageBlocks, homepageTransactions, homepageServiceNodePage, homepageServiceNodePageSize, homepageServiceNodeLastPage, setHomepageServiceNodePage, setHomepageServiceNodePageSize, openSection, search, query, setQuery, searchLoading, message, connection, liveNetwork, serviceNodes, transactionPool, openTransaction, blockPage, blockPageSize, setBlockPage, setBlockPageSize, prefetchSnapshot, blocks, openBlock, snapshot, blocksSelectionMatches, transactionPage, transactionPageSize, setTransactionPage, setTransactionPageSize, transactions, transactionsSelectionMatches, activeEnd, awaitingEnd, offlineEnd, statusTotal, activeServiceNodes, unlockingServiceNodes, awaitingServiceNodes, decommissionedServiceNodes, lockedDeregisteredServiceNodeTotal, currentServiceNodeTotal, stakingRatio, stakingRatioWidth, minedSupply, setLifecycleView, lifecycleView, setDeregisteredNodePage, deregisteredTotal, deregisteredIndexedThrough, deregisteredNodes, deregisteredNodePage, deregisteredNodeLastPage, deregisteredNodePageSize, setDeregisteredNodePageSize, serviceNodeHeight, openServiceNode, paginatedDeregisteredNodes, serviceNodeQuery, setServiceNodeQuery, setServiceNodePage, filteredServiceNodes, awaitingServiceNodeRows, paginatedServiceNodes, serviceNodePage, serviceNodeLastPage, serviceNodePageSize, setServiceNodePageSize, latestQuorum, quorumPage, quorums, quorumPageSize, quorumLoading, changeQuorumPage, changeQuorumPageSize, homepageServiceNodes, detailPending, closeDetail, detail, detailBackdropRef, detailRenderKey };
 }

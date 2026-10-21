@@ -3,7 +3,8 @@ import { isValidChainSnapshot, isValidNetworkPreview, isValidQuorumSnapshot, isV
 import { cachedNetworkLiveResponse, cachedQuorumLiveResponse, cachedServiceNodesLiveResponse, cachedTransactionPoolLiveResponse } from "./live-responses";
 import { cachedChainResponse } from "./chain-cache";
 import { blocksPageResponse, transactionsPageResponse } from "./ledger";
-import type { EdgeCache, ExecutionContext } from "./runtime-types";
+import type { EdgeCache, ExecutionContext, Env } from "./runtime-types";
+import { persistBootstrapSnapshot, readPersistedSnapshots, persistedSnapshotKey, PERSISTED_SNAPSHOT_MAX_AGE_MS } from "./bootstrap-store";
 
 export type BootstrapSnapshotKind = Exclude<keyof ExplorerBootstrap, "ledgerRequest" | "renderedAt">;
 type Snapshot = NonNullable<ExplorerBootstrap[BootstrapSnapshotKind]> & { fetchedAt: string };
@@ -12,6 +13,7 @@ type Entry = { data: Snapshot; fetchedAt: number };
 const FRESH_MS = 5_000;
 const STALE_MS = 300_000;
 const FIRST_RENDER_MS = 4_000;
+const BOOTSTRAP_CACHE_READ_MS = 250;
 const PRODUCER_MS = 35_000;
 const MAX_ENTRIES = 128;
 const MAX_PENDING = 64;
@@ -20,6 +22,7 @@ const sizes = new Set([5, 10, 20, 25, 50, 100]);
 const memory = new Map<string, Entry>();
 const pending = new Map<string, Promise<Snapshot | null>>();
 const writes = new Map<string, Promise<Snapshot>>();
+const menuWarmups = new Map<string, number>();
 
 function emptyBootstrap(): ExplorerBootstrap {
   return { network: null, serviceNodes: null, quorums: null, transactionPool: null, chain: null, blocks: null, transactions: null, ledgerRequest: null };
@@ -67,6 +70,7 @@ function component(kind: BootstrapSnapshotKind, source: URL): Component | null {
     if (!/^(5|10|20|25|50|100)$/.test(blockSize) || !/^(5|10|20|25|50|100)$/.test(transactionSize)) return null;
     params.set("blockPage", "0"); params.set("transactionPage", "0");
     params.set("blockPageSize", blockSize); params.set("transactionPageSize", transactionSize);
+    if (url.searchParams.get("overview") === "1") params.set("overview", "1");
   }
   const keyUrl = new URL(`/__explorer-bootstrap/v1/${kind}`, url.origin);
   keyUrl.search = params.toString();
@@ -149,21 +153,27 @@ function betterEntry(current: Entry | null, next: Entry) {
 
 function cacheApi() { return (globalThis as unknown as { caches?: { default?: EdgeCache } }).caches?.default; }
 
-async function readEntry(item: Component): Promise<Entry | null> {
+async function readEntry(item: Component, maxAge = STALE_MS): Promise<Entry | null> {
   let entry = memory.get(item.key) ?? null;
-  if (entry && Date.now() - entry.fetchedAt <= STALE_MS) return entry;
+  if (entry && Date.now() - entry.fetchedAt <= maxAge) return entry;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const cached = await cacheApi()?.match(new Request(item.key));
-    if (cached) {
-      const value: unknown = await cached.json();
-      if (validSnapshot(item.kind, value, item.url)) entry = betterEntry(entry, { data: value, fetchedAt: Date.parse(value.fetchedAt) });
-    }
-  } catch { /* Public cache availability must not block a render. */ }
-  if (!entry || Date.now() - entry.fetchedAt > STALE_MS) { memory.delete(item.key); return null; }
+    const found = await Promise.race([
+      (async () => {
+        const cached = await cacheApi()?.match(new Request(item.key));
+        if (!cached) return null;
+        const value: unknown = await cached.json();
+        return validSnapshot(item.kind, value, item.url) ? { data: value, fetchedAt: Date.parse(value.fetchedAt) } : null;
+      })().catch(() => null),
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), BOOTSTRAP_CACHE_READ_MS); }),
+    ]);
+    if (found) entry = betterEntry(entry, found);
+  } finally { clearTimeout(timer); }
+  if (!entry || Date.now() - entry.fetchedAt > maxAge) { memory.delete(item.key); return null; }
   return entry;
 }
 
-async function storeEntry(item: Component, data: Snapshot): Promise<Snapshot> {
+async function storeEntry(item: Component, data: Snapshot, ctx: ExecutionContext): Promise<Snapshot> {
   const previous = writes.get(item.key);
   const save = (previous?.catch(() => data) ?? Promise.resolve(data)).then(async () => {
     const candidate = { data, fetchedAt: Date.parse(data.fetchedAt) };
@@ -171,11 +181,12 @@ async function storeEntry(item: Component, data: Snapshot): Promise<Snapshot> {
     memory.delete(item.key);
     while (memory.size >= MAX_ENTRIES) memory.delete(memory.keys().next().value!);
     memory.set(item.key, selected);
-    try {
+    const publish = (async () => {
       await cacheApi()?.put(new Request(item.key), new Response(JSON.stringify(selected.data), {
         headers: { "content-type": "application/json", "cache-control": "public, max-age=300" },
       }));
-    } catch { /* Keep the verified in-process fallback when Cache API fails. */ }
+    })().catch(() => undefined);
+    ctx.waitUntil(publish);
     return selected.data;
   });
   writes.set(item.key, save);
@@ -242,28 +253,50 @@ async function loadComponent(item: Component, ctx: ExecutionContext): Promise<Sn
   return responseData(item, response);
 }
 
-function refreshComponent(item: Component, ctx: ExecutionContext) {
+function refreshComponent(item: Component, ctx: ExecutionContext, env?: Env) {
   const existing = pending.get(item.key);
   if (existing) return existing;
   if (pending.size >= MAX_PENDING) return Promise.resolve(null);
   let timer: ReturnType<typeof setTimeout>;
   const deadline = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), PRODUCER_MS); });
   const work = Promise.race([loadComponent(item, ctx).catch(() => null), deadline]).then(async (data) => (
-    data && validSnapshot(item.kind, data, item.url) ? storeEntry(item, data) : null
+    data && validSnapshot(item.kind, data, item.url) ? storeEntry(item, data, ctx).then((selected) => { persistBootstrapSnapshot(item.key, selected, env, ctx); return selected; }) : null
   )).finally(() => { clearTimeout(timer); if (pending.get(item.key) === work) pending.delete(item.key); });
   pending.set(item.key, work);
   ctx.waitUntil(work.then(() => undefined));
   return work;
 }
 
-export async function rememberBootstrapResponse(kind: BootstrapSnapshotKind, url: URL, response: Response, ctx: ExecutionContext): Promise<void> {
+
+function prewarmDefaultMenus(url: URL, ctx: ExecutionContext, env?: Env) {
+  if (!env?.EXPLORER_SNAPSHOTS || Date.now() - (menuWarmups.get(url.origin) ?? 0) < 60_000) return;
+  menuWarmups.delete(url.origin);
+  menuWarmups.set(url.origin, Date.now());
+  while (menuWarmups.size > 16) menuWarmups.delete(menuWarmups.keys().next().value!);
+  for (const [kind, path] of [
+    ["blocks", "/api/blocks?pageSize=50"],
+    ["transactions", "/api/transactions?pageSize=50"],
+    ["chain", "/api/chain?blockPage=0&blockPageSize=10&transactionPage=0&transactionPageSize=10"],
+    ["serviceNodes", "/api/service-nodes-live"],
+    ["quorums", "/api/quorums?pageSize=10&latest=1"],
+    ["transactionPool", "/api/transaction-pool"],
+  ] as const) {
+    const item = component(kind, new URL(path, url));
+    if (item) ctx.waitUntil(readEntry(item).then((cached) => {
+      if (!cached || Date.now() - cached.fetchedAt > FRESH_MS) return refreshComponent(item, ctx, env);
+      return null;
+    }));
+  }
+}
+
+export async function rememberBootstrapResponse(kind: BootstrapSnapshotKind, url: URL, response: Response, ctx: ExecutionContext, env?: Env): Promise<void> {
   const item = component(kind, url);
   if (!item || !response.ok) return;
-  const work = responseData(item, response.clone()).then((data) => data ? storeEntry(item, data) : undefined).catch(() => undefined);
+  const work = responseData(item, response.clone()).then((data) => data ? storeEntry(item, data, ctx).then((selected) => { persistBootstrapSnapshot(item.key, selected, env, ctx); }) : undefined).catch(() => undefined);
   ctx.waitUntil(work);
 }
 
-export async function explorerBootstrap(url: URL, ctx: ExecutionContext): Promise<ExplorerBootstrap> {
+export async function explorerBootstrap(url: URL, ctx: ExecutionContext, env?: Env): Promise<ExplorerBootstrap> {
   const result = emptyBootstrap();
   const route = url.pathname.replace(/\/$/, "") || "/";
   if (!["/", "/service-nodes", "/statistics", "/blocks", "/transactions"].includes(route)) return result;
@@ -289,19 +322,37 @@ export async function explorerBootstrap(url: URL, ctx: ExecutionContext): Promis
       add("transactions", "/api/transactions?pageSize=10");
     }
   }
-  const writeResult = (item: Component, data: Snapshot) => { Object.assign(result, { [item.kind]: data }); };
+  let ready: () => void;
+  const pageReady = new Promise<void>((resolve) => { ready = resolve; });
+  const writeResult = (item: Component, data: Snapshot) => {
+    Object.assign(result, { [item.kind]: data });
+    if (completeExplorerBootstrap(route, result)) ready();
+  };
+  let durableRead: Promise<Record<string, unknown>> | undefined;
+  const persisted = () => durableRead ??= readPersistedSnapshots(items.map((item) => item.key), url.origin, env);
   const work = items.map(async (item) => {
-    const cached = await readEntry(item);
+    const memoryEntry = memory.get(item.key);
+    const durable = !memoryEntry || Date.now() - memoryEntry.fetchedAt > PERSISTED_SNAPSHOT_MAX_AGE_MS ? persisted() : null;
+    const cached = await readEntry(item, PERSISTED_SNAPSHOT_MAX_AGE_MS);
     if (cached) {
       writeResult(item, cached.data);
-      if (Date.now() - cached.fetchedAt > FRESH_MS) void refreshComponent(item, ctx);
+      if (Date.now() - cached.fetchedAt > FRESH_MS) void refreshComponent(item, ctx, env);
       return;
     }
-    const fresh = await refreshComponent(item, ctx);
+    const refreshing = refreshComponent(item, ctx, env);
+    const stored = (await (durable ?? persisted()))[persistedSnapshotKey(item.key) ?? ""];
+    if (stored && validSnapshot(item.kind, stored, item.url)
+      && Date.now() - Date.parse(stored.fetchedAt) <= PERSISTED_SNAPSHOT_MAX_AGE_MS) {
+      writeResult(item, stored);
+      memory.set(item.key, { data: stored, fetchedAt: Date.parse(stored.fetchedAt) });
+      return;
+    }
+    const fresh = await refreshing;
     if (fresh) writeResult(item, fresh);
   });
+  prewarmDefaultMenus(url, ctx, env);
   let timer: ReturnType<typeof setTimeout>;
-  await Promise.race([Promise.allSettled(work), new Promise<void>((resolve) => { timer = setTimeout(resolve, FIRST_RENDER_MS); })]);
+  await Promise.race([Promise.allSettled(work), pageReady, new Promise<void>((resolve) => { timer = setTimeout(resolve, FIRST_RENDER_MS); })]);
   clearTimeout(timer!);
   const snapshot = { ...result };
   const ledger = route === "/blocks" ? snapshot.blocks : route === "/transactions" ? snapshot.transactions : null;
@@ -309,4 +360,13 @@ export async function explorerBootstrap(url: URL, ctx: ExecutionContext): Promis
     cursor: url.searchParams.get("cursor"), pageSize: ledger.pageSize, page: Math.floor(ledger.position / ledger.pageSize),
   };
   return snapshot;
+}
+
+export function completeExplorerBootstrap(route: string, data: ExplorerBootstrap): boolean {
+  if (!data.network) return false;
+  if (route === "/blocks") return data.blocks != null;
+  if (route === "/transactions") return data.transactions != null;
+  if (route === "/service-nodes") return data.serviceNodes != null;
+  if (route === "/statistics") return data.serviceNodes != null && data.chain != null && data.quorums != null;
+  return route === "/" && data.serviceNodes != null && data.chain != null && data.quorums != null && data.blocks != null && data.transactions != null;
 }

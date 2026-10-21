@@ -1,4 +1,4 @@
-import type { ServiceNodesLiveSnapshot, NetworkPreview, QuorumSnapshot, ChainSnapshot } from "../explorer-types";
+import type { ServiceNodesLiveSnapshot, NetworkPreview, QuorumSnapshot, ChainSnapshot, UpgradeReadiness, ForkArchiveSnapshot, ForkSnapshot } from "../explorer-types";
 import { PAGE_SIZE_OPTIONS } from "./constants";
 
 export function isNewerHeightSnapshot(currentHeight: number, currentFetchedAt: string, nextHeight: number, nextFetchedAt: string) {
@@ -14,6 +14,77 @@ function isNullableNonNegativeInteger(value: unknown) {
   return value === null || isNonNegativeInteger(value);
 }
 
+const FORK_ACTIVATION_HEIGHT = 882_300;
+const FORK_REQUIRED_PROTOCOL = 17;
+const FORK_REQUIRED_RELEASE = "4.0.0";
+
+function forkSafeCount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function validForkDate(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+export function isValidUpgradeReadiness(value: unknown, expectedTotal?: number): value is UpgradeReadiness {
+  const readiness = value as UpgradeReadiness | null;
+  if (!readiness || readiness.targetVersion !== FORK_REQUIRED_RELEASE || readiness.scope !== "registered-service-nodes"
+    || ![readiness.eligibleTotal, readiness.upgraded, readiness.pending, readiness.unknown].every(forkSafeCount)
+    || (expectedTotal !== undefined && readiness.eligibleTotal !== expectedTotal)
+    || readiness.upgraded + readiness.pending + readiness.unknown !== readiness.eligibleTotal
+    || !Array.isArray(readiness.versions)) return false;
+  const percentage = readiness.eligibleTotal > 0
+    ? Math.round(readiness.upgraded / readiness.eligibleTotal * 10_000) / 100 : null;
+  if (readiness.percentage !== percentage) return false;
+  const versions = new Set<string>();
+  let upgraded = 0;
+  let pending = 0;
+  for (const entry of readiness.versions) {
+    if (!entry || typeof entry.version !== "string" || !forkSafeCount(entry.count) || entry.count === 0
+      || versions.has(entry.version)) return false;
+    const parts = entry.version.split(".");
+    if (parts.length !== 3 || parts.some((part) => !/^(0|[1-9]\d*)$/.test(part) || !forkSafeCount(Number(part)))
+      || parts.every((part) => Number(part) === 0)) return false;
+    versions.add(entry.version);
+    if (Number(parts[0]) >= 4) upgraded += entry.count;
+    else pending += entry.count;
+  }
+  return upgraded === readiness.upgraded && pending === readiness.pending;
+}
+
+export function isValidForkArchive(value: unknown): value is ForkArchiveSnapshot {
+  const archive = value as ForkArchiveSnapshot | null;
+  if (!archive || typeof archive.available !== "boolean" || typeof archive.exactClosingSnapshot !== "boolean") return false;
+  if (archive.preFork === null) return archive.exactClosingSnapshot === false;
+  const observation = archive.preFork;
+  return archive.available === true && observation != null
+    && forkSafeCount(observation.height) && observation.height < FORK_ACTIVATION_HEIGHT
+    && validForkDate(observation.observedAt) && Date.parse(observation.observedAt) <= Date.now() + 60_000
+    && typeof observation.source === "string" && observation.source.length > 0 && observation.source.length <= 256
+    && isValidUpgradeReadiness(observation.readiness) && observation.readiness.eligibleTotal > 0
+    && archive.exactClosingSnapshot === (observation.height === FORK_ACTIVATION_HEIGHT - 1);
+}
+
+export function isValidForkSnapshot(value: unknown, network: ChainSnapshot["network"]): value is ForkSnapshot {
+  const fork = value as ForkSnapshot | null;
+  if (!fork || fork.activationHeight !== FORK_ACTIVATION_HEIGHT || fork.targetProtocol !== FORK_REQUIRED_PROTOCOL
+    || fork.targetVersion !== FORK_REQUIRED_RELEASE || fork.currentProtocol !== network.hardFork
+    || !forkSafeCount(fork.currentProtocol) || !validForkDate(fork.observedAt)
+    || Date.parse(fork.observedAt) > Date.now() + 60_000
+    || fork.blocksRemaining !== Math.max(0, FORK_ACTIVATION_HEIGHT - network.height)
+    || fork.blocksSinceActivation !== Math.max(0, network.height - FORK_ACTIVATION_HEIGHT)) return false;
+  const heightReached = network.height >= FORK_ACTIVATION_HEIGHT;
+  if (fork.estimatedActivationAt !== null && (!validForkDate(fork.estimatedActivationAt)
+    || heightReached || Date.parse(fork.estimatedActivationAt) <= Date.parse(fork.observedAt))) return false;
+  const block = fork.activationBlock;
+  if (block !== null && (!heightReached || !block || block.height !== FORK_ACTIVATION_HEIGHT
+    || typeof block.hash !== "string" || !/^[a-f0-9]{64}$/i.test(block.hash)
+    || !forkSafeCount(block.timestamp) || block.timestamp === 0
+    || !forkSafeCount(block.protocol) || block.protocol === 0)) return false;
+  const activated = heightReached && block?.protocol === FORK_REQUIRED_PROTOCOL && fork.currentProtocol >= FORK_REQUIRED_PROTOCOL;
+  return fork.phase === (!heightReached ? "scheduled" : activated ? "activated" : "unverified");
+}
+
 export function isValidServiceNodesSnapshot(value: unknown): value is ServiceNodesLiveSnapshot {
   const snapshot = value as ServiceNodesLiveSnapshot | null;
   const nodes = snapshot?.serviceNodes;
@@ -22,6 +93,8 @@ export function isValidServiceNodesSnapshot(value: unknown): value is ServiceNod
     || !nodes) return false;
   const counts = [nodes.total, nodes.active, nodes.funded, nodes.exiting, nodes.decommissioned];
   return counts.every(isNonNegativeInteger)
+    && (nodes.upgradeReadiness === undefined || isValidUpgradeReadiness(nodes.upgradeReadiness, nodes.total))
+    && (nodes.forkArchive === undefined || isValidForkArchive(nodes.forkArchive))
     && nodes.active <= nodes.total
     && nodes.funded <= nodes.total
     && Array.isArray(nodes.nodes)
@@ -64,6 +137,7 @@ export function isValidNetworkPreview(value: unknown): value is NetworkPreview {
     && [snapshot.network?.targetSeconds, snapshot.network?.latestBlockTimestamp,
       snapshot.network?.hardFork, snapshot.network?.blockSizeMedian, snapshot.network?.blockSizeLimit].every(isNonNegativeInteger)
     && typeof snapshot.network?.protocol === "string"
+    && (snapshot.network?.fork === undefined || isValidForkSnapshot(snapshot.network.fork, snapshot.network))
     && typeof snapshot.network?.synced === "boolean";
 }
 

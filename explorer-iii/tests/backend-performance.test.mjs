@@ -13,6 +13,13 @@ function declaration(name) {
   return node.getText(sourceFile);
 }
 
+function constant(name) {
+  const node = sourceFile.statements.find((statement) => ts.isVariableStatement(statement)
+    && statement.declarationList.declarations.some((item) => item.name.getText(sourceFile) === name));
+  assert.ok(node, `Missing production constant ${name}`);
+  return node.getText(sourceFile);
+}
+
 function workerFetchSource() {
   const worker = sourceFile.statements.flatMap((statement) => ts.isVariableStatement(statement) ? [...statement.declarationList.declarations] : [])
     .find((statement) => statement.name.getText(sourceFile) === "worker");
@@ -31,6 +38,13 @@ function productionFunctions(dependencies) {
     declaration("classifyTransaction"),
     declaration("verifiedChainTransactionDetails"),
     declaration("availableChainTransactionDetails"),
+    "const CHAIN_TX_BATCH_SIZE = 100; const CHAIN_BLOCK_CONCURRENCY = 4;",
+    ...["chainHeaders", "chainMinerHash", "chainTransactionRecords", "chainMinerTransaction", "chainBlockDetails"].map(declaration),
+    ...["POS_FORK_HEIGHT", "POS_TARGET_PROTOCOL", "POS_TARGET_VERSION"].map(constant),
+    ...["ACTIVATION_PROOF_TTL_MS", "ACTIVATION_PROOF_BUDGET_MS", "verifiedActivationProof", "pendingActivationProof"].map(constant),
+    declaration("buildForkSnapshot"),
+    declaration("activationProofRequest"),
+    declaration("forkNetworkSnapshot"),
     declaration("chainSnapshot"),
     declaration("json"),
     declaration("blockResponse"),
@@ -103,7 +117,7 @@ function chainHarness({ historical = false, held = [], emissionError = false } =
     cachedRpcFetch: (path) => {
       if (path === "/get_info") return request("info", { node: "https://rpc.example.test", data: info });
       assert.equal(path, "/get_transactions");
-      return request("transaction-details", { data: { txs: [TX] } });
+      return request("transaction-details", { data: { txs: [{ ...TX, block_height: txEnd }] } });
     },
     cachedRpcFetchNode: async () => {
       const result = await request("emission", { data: { status: "success", data: { coinbase: 50_000, blk_no: 1_000 } } });
@@ -112,9 +126,9 @@ function chainHarness({ historical = false, held = [], emissionError = false } =
     },
     cachedJsonRpc: (method, params) => {
       if (method === "get_block") {
-        const selected = blockHeaders.find((item) => item.height === params.height);
+        const selected = blockHeaders.find((item) => item.hash === params.hash);
         assert.ok(selected, "Do not request speculative block heights");
-        return request(`block:${params.height}`, { data: { result: { json: JSON.stringify({ miner_tx: { vin: [{ gen: { height: params.height } }], vout: [{}, {}] }, tx_hashes: selected.tx_hashes }) } } });
+        return request(`block:${selected.height}`, { data: { result: { block_header: selected, json: JSON.stringify({ miner_tx: { vin: [{ gen: { height: selected.height } }], vout: [{}, {}] }, tx_hashes: selected.tx_hashes }) } } });
       }
       assert.equal(method, "get_block_headers_range");
       if (params.get_tx_hashes == null) return request("tip", { data: { result: { headers: [header(1_000)] } } });
@@ -177,6 +191,12 @@ test("chain overlap preserves verified network and transaction/block arithmetic"
     hardFork: 16, protocol: "3", txPoolSize: 0, blockSizeMedian: 1_000, blockSizeLimit: 2_000,
     coinbase: null, fees: null, minedSupply: 50_000, supplyHeight: 1_000, supplySource: "Judecoin emission index API",
     latestBlockTimestamp: 1_699_999_900, latestBlockAgeSeconds: 100, synced: true,
+    fork: {
+      activationHeight: 882300, targetProtocol: 17, targetVersion: "4.0.0", currentProtocol: 16,
+      phase: "scheduled", blocksRemaining: 881300, blocksSinceActivation: 0,
+      estimatedActivationAt: new Date(FixedDate.now() + 881300 * 180000).toISOString(),
+      observedAt: new Date(FixedDate.now()).toISOString(), activationBlock: null,
+    },
   });
   assert.deepEqual(snapshot.blocks[0], {
     height: 1_000, timestamp: 1_699_999_900, hash: "3e8".padStart(64, "0"), txs: 1, size: 200,

@@ -5,6 +5,14 @@ interface AssetFetcher {
 }
 
 export interface Env {
+  EXPLORER_SNAPSHOTS?: {
+    idFromName(name: string): unknown;
+    get(id: unknown): { fetch(request: Request): Promise<Response> };
+  };
+  FORK_ARCHIVE?: {
+    idFromName(name: string): unknown;
+    get(id: unknown): { fetch(request: Request): Promise<Response> };
+  };
   ASSETS: AssetFetcher;
   IMAGES: {
     input(stream: ReadableStream): {

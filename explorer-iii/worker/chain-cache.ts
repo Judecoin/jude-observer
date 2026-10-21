@@ -93,14 +93,18 @@ export async function cachedChainResponse(request: Request, url: URL, ctx: Execu
     const createdAt = Number(cached.headers.get(CHAIN_CACHE_CREATED_HEADER) || 0);
     const age = Math.max(0, Date.now() - createdAt);
     const requestedTip = Number.parseInt(url.searchParams.get("tip") || "", 10);
+    const snapshot = await cached.clone().json().catch(() => null) as { network?: { height?: number }; pendingDetails?: boolean; headerOnly?: boolean } | null;
     let reachesMinimumHeight = true;
     if (Number.isInteger(requestedTip) && requestedTip >= 0) {
-      const snapshot = await cached.clone().json().catch(() => null) as { network?: { height?: number } } | null;
       reachesMinimumHeight = Number.isInteger(snapshot?.network?.height)
         && Number(snapshot?.network?.height) >= requestedTip;
     }
     if (createdAt > 0 && age <= CHAIN_CACHE_FRESH_MS && reachesMinimumHeight) return noStoreResponse(cached);
-    if (createdAt > 0 && age <= CHAIN_CACHE_STALE_MS && reachesMinimumHeight) {
+    // A full-detail retry should receive the recovered same-height records,
+    // rather than another partial response followed by one more polling delay.
+    const incompleteFullSnapshot = url.searchParams.get("overview") !== "1"
+      && (snapshot?.pendingDetails === true || snapshot?.headerOnly === true);
+    if (createdAt > 0 && age <= CHAIN_CACHE_STALE_MS && reachesMinimumHeight && !incompleteFullSnapshot) {
       ctx.waitUntil(refreshChainCache(cache, cacheKey, url).then(() => undefined));
       return noStoreResponse(cached);
     }

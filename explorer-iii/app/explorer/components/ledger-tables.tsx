@@ -28,7 +28,7 @@ export function BlockRecords({ blocks, openBlock, loadingMessage }: { blocks: Bl
       <span className="height detail-link"><i>{index === 0 ? "●" : "◆"}</i>{compact(block.height)}</span>
       <span>{block.age}</span><TxTypeBadge type="block-reward" compact iconOnly /><IdentifierCell className="block-hash detail-link" value={block.hash} label="block hash" /><span>{block.txs}</span><span>{block.size}</span><span>{block.difficulty}</span><span>{block.fee == null ? "N/A" : atomicJude(block.fee)}</span><span>{block.reward == null ? "N/A" : atomicJude(block.reward)}</span><span>{inOut(block.inputs, block.outputs)}</span>
     </div>)}
-    {loadingMessage && <div className="nodes-loading notranslate" translate="no" role="status">{loadingMessage}</div>}
+    {loadingMessage && <div className={`${blocks.length ? "ledger-note" : "nodes-loading"} notranslate`} translate="no" role="status">{blocks.length ? `Showing the last verified records. ${loadingMessage.startsWith("Fetching") ? "Updates continue in the background." : loadingMessage}` : loadingMessage}</div>}
   </div>;
 }
 
@@ -38,6 +38,6 @@ export function TransactionRecords({ transactions, openTransaction, loadingMessa
     {transactions.map((tx, index) => <div className="table-row transaction-row-link" key={tx.hash} role="button" tabIndex={0} aria-label={`Open transaction ${tx.hash}`} onClick={() => openTransaction(tx.hash, tx.txType)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openTransaction(tx.hash, tx.txType); } }}>
       <span className="height"><i>{index === 0 ? "●" : "◆"}</i>{compact(tx.block)}</span><span>{tx.age}</span><TxTypeBadge type={tx.txType} compact iconOnly /><IdentifierCell className="tx-hash detail-link" value={tx.hash} label="transaction hash" /><span>{tx.size}</span><span>{tx.confirmations}</span><span>{tx.fee == null ? "N/A" : atomicJude(tx.fee)}</span><span>{inOut(tx.inputs, tx.outputs)}</span>
     </div>)}
-    {loadingMessage && <div className="nodes-loading notranslate" translate="no" role="status">{loadingMessage}</div>}
+    {loadingMessage && <div className={`${transactions.length ? "ledger-note" : "nodes-loading"} notranslate`} translate="no" role="status">{transactions.length ? `Showing the last verified records. ${loadingMessage.startsWith("Fetching") ? "Updates continue in the background." : loadingMessage}` : loadingMessage}</div>}
   </div>;
 }

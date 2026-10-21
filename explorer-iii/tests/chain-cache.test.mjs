@@ -267,3 +267,52 @@ test("different minimum tips do not share an insufficient in-flight refresh", as
   assert.equal(harness.stored.size, 1);
   assert.equal((await harness.stored.values().next().value.clone().json()).network.height, 1_001);
 });
+
+test("expired partial full snapshots join a foreground recovery at the same height", async () => {
+  const started = deferred();
+  const release = deferred();
+  const harness = cacheHarness(async (_url, sequence) => {
+    if (sequence === 1) return chainResponse(1_000, { pendingDetails: true });
+    started.resolve();
+    await release.promise;
+    return chainResponse(1_000);
+  });
+  await harness.request();
+  harness.advance(5_001);
+  let delivered = false;
+  const pending = harness.request().then((response) => { delivered = true; return response; });
+  const duplicate = harness.request();
+  await started.promise;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(delivered, false, "do not send another partial payload before the recovered details");
+  assert.equal(harness.calls.length, 2, "one initial load and one shared recovery");
+  release.resolve();
+  for (const response of await Promise.all([pending, duplicate])) {
+    assert.equal((await response.json()).pendingDetails, undefined);
+  }
+});
+
+test("failed partial recovery keeps verified headers and can retry without a new block", async () => {
+  const harness = cacheHarness(async (_url, sequence) => sequence === 1
+    ? chainResponse(1_000, { pendingDetails: true })
+    : sequence === 2 ? new Response("unavailable", { status: 503 }) : chainResponse(1_000));
+  const partial = await (await harness.request()).json();
+  harness.advance(5_001);
+  assert.deepEqual(await (await harness.request()).json(), partial);
+  assert.equal((await (await harness.request()).json()).pendingDetails, undefined);
+  assert.equal(harness.calls.length, 3);
+});
+
+test("overview snapshots keep background refresh even though they always lack decoded details", async () => {
+  const release = deferred();
+  const harness = cacheHarness(async (_url, sequence) => {
+    if (sequence > 1) await release.promise;
+    return chainResponse(1_000, { headerOnly: true, pendingDetails: true });
+  });
+  await harness.request("overview=1");
+  harness.advance(5_001);
+  assert.equal((await (await harness.request("overview=1")).json()).headerOnly, true);
+  assert.equal(harness.background.length, 1);
+  release.resolve();
+  await Promise.all(harness.background);
+});

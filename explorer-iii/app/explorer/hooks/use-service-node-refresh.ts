@@ -11,11 +11,12 @@ import {
 import { isValidServiceNodesSnapshot, isNewerHeightSnapshot } from "../snapshot-validation";
 import { rememberServiceNodesSnapshot, isProvisionalSnapshot } from "../snapshot-store";
 
-export function useServiceNodeRefresh({ highestKnownHeightRef, setServiceNodesLive, serviceNodeRefreshRef, enabled = true }: {
+export function useServiceNodeRefresh({ highestKnownHeightRef, setServiceNodesLive, serviceNodeRefreshRef, enabled = true, setServiceNodeStatus }: {
   enabled?: boolean;
   highestKnownHeightRef: RefObject<number>;
   setServiceNodesLive: Dispatch<SetStateAction<ServiceNodesLiveSnapshot | null>>;
   serviceNodeRefreshRef: RefObject<(() => void) | null>;
+  setServiceNodeStatus?: Dispatch<SetStateAction<"loading" | "live" | "offline">>;
 }) {
 
   useEffect(() => {
@@ -54,6 +55,7 @@ export function useServiceNodeRefresh({ highestKnownHeightRef, setServiceNodesLi
         }
         highestKnownHeightRef.current = Math.max(highestKnownHeightRef.current, data.height);
         if (active) {
+          setServiceNodeStatus?.("live");
           const accepted = rememberServiceNodesSnapshot(data);
           if (accepted) setServiceNodesLive((current) => !current || isProvisionalSnapshot(current) || isNewerHeightSnapshot(
             current.height, current.fetchedAt, accepted.height, accepted.fetchedAt,
@@ -64,6 +66,7 @@ export function useServiceNodeRefresh({ highestKnownHeightRef, setServiceNodesLi
         }
       } catch {
         // Keep the last complete Service Node snapshot visible
+        if (active) setServiceNodeStatus?.("offline");
         nextDelay = TRANSACTION_POOL_REFRESH_DELAY_MS;
       } finally {
         window.clearTimeout(requestTimeout);
@@ -100,5 +103,5 @@ export function useServiceNodeRefresh({ highestKnownHeightRef, setServiceNodesLi
       if (serviceNodeRefreshRef.current === requestRefresh) serviceNodeRefreshRef.current = null;
       document.removeEventListener("visibilitychange", resume);
     };
-  }, [enabled, highestKnownHeightRef, serviceNodeRefreshRef, setServiceNodesLive]);
+  }, [enabled, highestKnownHeightRef, serviceNodeRefreshRef, setServiceNodesLive, setServiceNodeStatus]);
 }

@@ -1,6 +1,6 @@
 {
   "name": "judecoin-blockchain-explorer-iii",
-  "version": "1.0.29",
+  "version": "1.0.33",
   "private": true,
   "engines": {
     "node": ">=22.13.0"

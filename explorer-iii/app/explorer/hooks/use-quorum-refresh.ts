@@ -57,7 +57,6 @@ export function useQuorumRefresh({ serviceNodesOnly, statisticsOnly, pageSizePre
             || current.pageSize !== accepted.pageSize
             || isNewerHeightSnapshot(current.height, current.fetchedAt, accepted.height, accepted.fetchedAt)
             ? accepted : current);
-          setQuorumLoading(false);
           nextDelay = data.height < highestKnownHeightRef.current
             ? QUORUM_CATCH_UP_RETRY_DELAY_MS
             : QUORUM_REFRESH_DELAY_MS;
@@ -67,6 +66,7 @@ export function useQuorumRefresh({ serviceNodesOnly, statisticsOnly, pageSizePre
       } finally {
         inFlight = false;
         if (active) {
+          setQuorumLoading(false);
           const delay = refreshQueued ? 0 : nextDelay;
           refreshQueued = false;
           timer = window.setTimeout(refreshQuorums, delay);

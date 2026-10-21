@@ -3,5 +3,12 @@
   "name": "judecoin-blockchain-explorer",
   "main": "./worker/index.ts",
   "compatibility_date": "2026-08-16",
-  "compatibility_flags": ["nodejs_compat"]
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "name": "FORK_ARCHIVE", "class_name": "ForkArchive" }, { "name": "EXPLORER_SNAPSHOTS", "class_name": "ExplorerSnapshotStore" }]
+  },
+  "migrations": [
+    { "tag": "fork-archive-v1", "new_sqlite_classes": ["ForkArchive"] },
+    { "tag": "explorer-snapshots-v1", "new_sqlite_classes": ["ExplorerSnapshotStore"] }
+  ]
 }

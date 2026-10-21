@@ -1,5 +1,6 @@
 import { cachedRpcFetch, cachedJsonRpc } from "./rpc";
 import type { RpcInfo, RpcHeader } from "./rpc-types";
+import { forkNetworkSnapshot } from "./fork-network";
 
 export async function networkPreviewSnapshot() {
   const [infoResponse, headerResponse] = await Promise.all([
@@ -18,20 +19,24 @@ export async function networkPreviewSnapshot() {
     ? Math.max(0, Math.floor(Date.now() / 1000) - latestBlockTimestamp)
     : Number.MAX_SAFE_INTEGER;
   const difficulty = Number(info.difficulty || header.difficulty || 0);
+  const fetchedAt = new Date().toISOString();
+  const hardFork = Number(header.major_version);
+  const fork = await forkNetworkSnapshot(topHeight, hardFork, targetSeconds, fetchedAt);
 
   return {
     live: true,
     source: "Judecoin mainnet",
     node: new URL(infoResponse.node).hostname,
-    fetchedAt: new Date().toISOString(),
+    fetchedAt,
     network: {
       height: topHeight,
       difficulty,
       targetSeconds,
       targetVerified: Number.isInteger(info.target) && Number(info.target) > 0,
       hashrate: difficulty / targetSeconds,
-      hardFork: Number(info.hard_fork || header.major_version),
+      hardFork,
       protocol: String(info.version || header.major_version),
+      fork,
       txPoolSize: Number(info.tx_pool_size || 0),
       blockSizeMedian: Number(info.block_weight_median || info.block_size_median || 0),
       blockSizeLimit: Number(info.block_weight_limit || info.block_size_limit || 0),

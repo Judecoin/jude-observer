@@ -87,6 +87,7 @@ test("isolates quorum cache tips and fails over semantic RPC errors", async () =
     assert.equal(rpcCallsByNode.get("node.judecoin.info"), 3);
     assert.equal(rpcCallsByNode.get("67.230.167.187"), 3);
 
+    for (let index = 0; index < background.length; index++) await background[index];
     const callsBeforeInvalidRequests = rpcCalls;
     const backgroundBeforeInvalidRequests = background.length;
     const futureResponse = await worker.fetch(new Request("http://localhost/api/quorums?page=0&pageSize=5&tip=100000001"), env, ctx);

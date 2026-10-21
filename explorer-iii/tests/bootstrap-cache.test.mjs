@@ -10,7 +10,7 @@ async function stripped(path) {
   return ast.statements.filter((node) => !ts.isImportDeclaration(node)).map((node) => node.getFullText(ast)).join("\n");
 }
 const compiled = ts.transpileModule([
-  await stripped("../app/explorer/snapshot-validation.ts"), await stripped("../worker/bootstrap.ts"),
+  await stripped("../app/explorer/snapshot-validation.ts"), await stripped("../worker/bootstrap-store.ts"), await stripped("../worker/bootstrap.ts"),
   "module.exports={explorerBootstrap,rememberBootstrapResponse,bootstrapCacheKey};",
 ].join("\n"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
 const settle = () => new Promise((resolve) => setImmediate(resolve));
@@ -80,7 +80,7 @@ function harness(sharedStored = new Map()) {
     cachedChainResponse: (_request, url) => invoke("chain", url), blocksPageResponse: (url) => invoke("blocks", url), transactionsPageResponse: (url) => invoke("transactions", url),
   });
   const ctx = { waitUntil(promise) { background.push(promise); }, passThroughOnException() {} };
-  return { calls, overrides, stored, background, ctx, fixtures: () => fixtures(now),
+  return { calls, overrides, stored, background, ctx, cache, fixtures: () => fixtures(now),
     async advance(ms) { now += ms; for (const [id, timer] of [...timers]) if (timer.due <= now) { timers.delete(id); timer.callback(); } await settle(); },
     render(path = "/") { return testModule.exports.explorerBootstrap(new URL(path, "https://explorer.test"), ctx); },
     async remember(kind, path, data) { await testModule.exports.rememberBootstrapResponse(kind, new URL(path, "https://explorer.test"), Response.json(data), ctx); await Promise.all(background); },
@@ -219,10 +219,10 @@ test("a slower lower-height capture cannot replace a newer verified public snaps
   assert.equal((await h.render("/blocks")).network.network.height, 1_001);
 });
 
-test("expired five-minute snapshots cannot masquerade as first-render data after an outage", async () => {
+test("snapshots past the six-hour fallback limit are omitted after an outage", async () => {
   const h = harness();
   await h.render("/service-nodes");
-  await h.advance(300_001);
+  await h.advance(6 * 60 * 60 * 1_000 + 1);
   h.overrides.network = async () => Response.json({ live: false }, { status: 503 });
   h.overrides.serviceNodes = async () => Response.json({ live: false }, { status: 503 });
   const result = await h.render("/service-nodes");
@@ -255,4 +255,40 @@ test("a new isolate with empty memory reuses the verified shared public cache wi
   assert.equal(result.blocks.rows.length, 10);
   assert.equal(result.transactions.rows.length, 10);
   assert.equal(visitor.calls.length, 0);
+});
+
+test("a stalled edge cache lookup cannot block fresh verified first-render data", async () => {
+  const h = harness();
+  h.cache.match = () => new Promise(() => {});
+  const pending = h.render("/blocks");
+  await settle();
+  await h.advance(250);
+  await h.advance(250);
+  const result = await pending;
+  assert.equal(result.network.network.height, 1000);
+  assert.equal(result.blocks.rows.length, 50);
+});
+
+test("a stalled edge cache write cannot hold back verified data or warm memory", async () => {
+  const h = harness();
+  h.cache.put = () => new Promise(() => {});
+  const pending = h.render("/blocks");
+  const marker = Symbol("blocked");
+  const result = await Promise.race([pending, settle().then(() => marker)]);
+  assert.notEqual(result, marker);
+  assert.equal(result.blocks.rows.length, 50);
+  assert.equal((await h.render("/blocks")).blocks.rows.length, 50);
+});
+
+test("a missing slow transaction pool does not delay a populated homepage", async () => {
+  const h = harness(), release = gate();
+  h.overrides.transactionPool = async (_url, data) => { await release.promise; return Response.json(data.transactionPool); };
+  const marker = Symbol("blocked");
+  const result = await Promise.race([h.render(), settle().then(() => marker)]);
+  assert.notEqual(result, marker);
+  assert.equal(result.blocks.rows.length, 10);
+  assert.equal(result.transactions.rows.length, 10);
+  assert.equal(result.transactionPool, null);
+  release.resolve();
+  await Promise.all(h.background);
 });

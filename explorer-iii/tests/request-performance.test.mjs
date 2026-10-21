@@ -381,3 +381,55 @@ test("a longer successful chain poll keeps new-tip catch-up immediate and incomp
     retry.close();
   }
 });
+
+async function rpcCacheHarness() {
+  const timer = clock();
+  const functions = await loadModule("../worker/rpc.ts", ["cachedRpcResult", "rpcResponseCache"], {
+    ...timer.environment, RPC_CACHE_MAX_ENTRIES: 2, RPC_CACHE_TTL_MS: 3_000,
+  });
+  return { ...functions, timer };
+}
+
+test("RPC cache eviction retains pending deduplication and evicts a completed entry", async () => {
+  const harness = await rpcCacheHarness();
+  let release;
+  let calls = 0;
+  const load = () => { calls++; return new Promise((resolve) => { release = resolve; }); };
+  const first = harness.cachedRpcResult("pending", load);
+  await harness.cachedRpcResult("completed", async () => ({ data: 1 }));
+  await harness.cachedRpcResult("new", async () => ({ data: 2 }));
+  const duplicate = harness.cachedRpcResult("pending", load);
+  await settle();
+  assert.equal(calls, 1);
+  release({ data: 3 });
+  assert.deepEqual(await first, await duplicate);
+  assert.equal(harness.rpcResponseCache.size, 2);
+});
+
+test("saturated pending cache applies backpressure, shares existing reads and recovers", async () => {
+  const harness = await rpcCacheHarness();
+  const releases = [];
+  const load = () => new Promise((resolve) => releases.push(resolve));
+  const first = harness.cachedRpcResult("a", load);
+  const second = harness.cachedRpcResult("b", load);
+  const duplicates = Array.from({ length: 20 }, () => harness.cachedRpcResult("a", load));
+  await assert.rejects(harness.cachedRpcResult("c", load), /capacity/);
+  assert.equal(harness.rpcResponseCache.size, 2);
+  assert.equal(releases.length, 2);
+  releases[0]({ data: "a" });
+  releases[1]({ data: "b" });
+  await Promise.all([first, second, ...duplicates]);
+  assert.deepEqual(await harness.cachedRpcResult("c", async () => ({ data: "recovered" })), { data: "recovered" });
+  await harness.timer.advance(3_001);
+  await harness.cachedRpcResult("fresh", async () => ({ data: 1 }));
+  assert.equal(harness.rpcResponseCache.size, 1);
+});
+
+test("synchronous and asynchronous RPC loader failures release their cache capacity", async () => {
+  const harness = await rpcCacheHarness();
+  for (const load of [() => { throw new Error("sync"); }, async () => { throw new Error("async"); }]) {
+    await assert.rejects(harness.cachedRpcResult("failed", load), /sync/);
+    assert.equal(harness.rpcResponseCache.size, 0);
+  }
+  assert.deepEqual(await harness.cachedRpcResult("failed", async () => ({ data: "ok" })), { data: "ok" });
+});

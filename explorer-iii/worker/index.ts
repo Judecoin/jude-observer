@@ -12,8 +12,13 @@ import { cachedChainResponse } from "./chain-cache";
 import { blocksPageResponse, transactionsPageResponse } from "./ledger";
 import { DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES, handleImageOptimization } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
-import { explorerBootstrap, rememberBootstrapResponse } from "./bootstrap";
+import { completeExplorerBootstrap, explorerBootstrap, rememberBootstrapResponse } from "./bootstrap";
+import { cachedExplorerPage } from "./page-cache";
 import { runWithExplorerBootstrap } from "./bootstrap-context";
+import { attachForkArchive, forkArchiveResponse } from "./fork-archive";
+
+export { ForkArchive } from "./fork-archive";
+export { ExplorerSnapshotStore } from "./bootstrap-store";
 
 const explorerPages = new Set(["/", "/service-nodes", "/statistics", "/blocks", "/transactions"]);
 
@@ -22,7 +27,7 @@ const worker = {
     const url = new URL(request.url);
     const capture = async (kind: "blocks" | "transactions" | "network" | "transactionPool" | "serviceNodes" | "quorums" | "chain", pending: Promise<Response>) => {
       const response = await pending;
-      if (response.ok) void rememberBootstrapResponse(kind, url, response, ctx).catch(() => undefined);
+      if (response.ok) void rememberBootstrapResponse(kind, url, response, ctx, env).catch(() => undefined);
       return response;
     };
 
@@ -63,7 +68,11 @@ const worker = {
     }
 
     if (url.pathname === "/api/service-nodes-live" && request.method === "GET") {
-      return capture("serviceNodes", cachedServiceNodesLiveResponse(url, ctx));
+      return capture("serviceNodes", cachedServiceNodesLiveResponse(url, ctx).then((response) => attachForkArchive(response, env, ctx)));
+    }
+
+    if (url.pathname === "/api/fork-history" && request.method === "GET") {
+      return forkArchiveResponse(env, ctx);
     }
 
     if (url.pathname === "/api/chain" && request.method === "GET") {
@@ -82,8 +91,12 @@ const worker = {
     }
 
     if (request.method === "GET" && explorerPages.has(url.pathname)) {
-      const initialData = { ...await explorerBootstrap(url, ctx), renderedAt: Date.now() };
-      return runWithExplorerBootstrap(initialData, () => handler.fetch(request, env, ctx));
+      return cachedExplorerPage(request, ctx, async () => {
+        const initialData = { ...await explorerBootstrap(url, ctx, env), renderedAt: Date.now() };
+        const response = await runWithExplorerBootstrap(initialData, () => handler.fetch(request, env, ctx));
+        const age = initialData.network ? Date.now() - Date.parse(initialData.network.fetchedAt) : Infinity;
+        return { response, cacheable: age >= 0 && age <= 60_000 && completeExplorerBootstrap(url.pathname, initialData) };
+      });
     }
     return handler.fetch(request, env, ctx);
   },

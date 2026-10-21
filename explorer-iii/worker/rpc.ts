@@ -103,17 +103,14 @@ export async function cachedRpcResult<T>(key: string, load: () => Promise<RpcRes
   if (cached?.value && cached.expiresAt > now) return cached.value as RpcResult<T>;
   if (cached?.pending) return cached.pending as Promise<RpcResult<T>>;
   while (rpcResponseCache.size >= RPC_CACHE_MAX_ENTRIES) {
-    const oldestKey = rpcResponseCache.keys().next().value as string | undefined;
-    if (oldestKey == null) break;
+    const oldestKey = [...rpcResponseCache].find(([, entry]) => !entry.pending)?.[0];
+    // Evicting an in-flight entry loses single-flight protection and lets
+    // repeated callers launch the same expensive RPC again under pressure.
+    if (oldestKey == null) throw new Error("RPC request capacity reached; retry shortly");
     rpcResponseCache.delete(oldestKey);
   }
-  const pending: Promise<RpcResult<T>> = load().then((value) => {
+  const pending: Promise<RpcResult<T>> = Promise.resolve().then(load).then((value) => {
     if (rpcResponseCache.get(key)?.pending !== pending) return value;
-    while (rpcResponseCache.size >= RPC_CACHE_MAX_ENTRIES && !rpcResponseCache.has(key)) {
-      const oldestKey = rpcResponseCache.keys().next().value as string | undefined;
-      if (oldestKey == null) break;
-      rpcResponseCache.delete(oldestKey);
-    }
     rpcResponseCache.set(key, { value, expiresAt: Date.now() + RPC_CACHE_TTL_MS });
     return value;
   }).catch((error) => {

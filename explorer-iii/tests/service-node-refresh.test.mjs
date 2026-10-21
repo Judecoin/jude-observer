@@ -69,6 +69,7 @@ function refreshHarness(initialSnapshot, knownHeight = initialSnapshot.height) {
   const serviceNodeRefreshRef = { current: null };
   const context = {
     enabled: true,
+    setServiceNodeStatus: undefined,
     AbortController, highestKnownHeightRef, serviceNodeRefreshRef,
     document: {
       hidden: false,

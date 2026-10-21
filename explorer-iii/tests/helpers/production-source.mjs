@@ -6,6 +6,7 @@ export async function readProductionSource(entry) {
   const visited = new Set();
   const imports = new Map();
   const declarations = [];
+  let linkShimAdded = false;
 
   async function visit(url) {
     if (visited.has(url.href)) return;
@@ -14,9 +15,18 @@ export async function readProductionSource(entry) {
     const source = ts.createSourceFile(url.pathname, text, ts.ScriptTarget.Latest, true,
       url.pathname.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
     for (const statement of source.statements) {
-      if (!ts.isImportDeclaration(statement) || statement.importClause?.isTypeOnly) continue;
+      const importsModule = ts.isImportDeclaration(statement) && !statement.importClause?.isTypeOnly;
+      const exportsModule = ts.isExportDeclaration(statement) && !statement.isTypeOnly && statement.moduleSpecifier;
+      if (!importsModule && !exportsModule) continue;
       const specifier = statement.moduleSpecifier.text;
-      if (specifier.startsWith(".") && !specifier.endsWith(".json")) {
+      if (specifier === "next/link") {
+        if (!linkShimAdded) {
+          imports.set("navigation-element", 'import { createElement as navigationElement } from "react";');
+          declarations.push('function Link({ prefetch: _prefetch, onNavigate: _onNavigate, ...props }) { return navigationElement("a", props); }');
+          declarations.push("function useLinkStatus() { return { pending: false }; }");
+          linkShimAdded = true;
+        }
+      } else if (specifier.startsWith(".") && !specifier.endsWith(".json")) {
         const target = new URL(specifier, url);
         // Follow the RSC page's client boundary, retaining its real Home wrapper
         // for structural checks without importing request-local server context.
@@ -41,7 +51,7 @@ export async function readProductionSource(entry) {
       }
     }
     for (const statement of source.statements) {
-      if (ts.isImportDeclaration(statement) || ts.isExportAssignment(statement)) continue;
+      if (ts.isImportDeclaration(statement) || ts.isExportAssignment(statement) || ts.isExportDeclaration(statement)) continue;
       if (ts.isExpressionStatement(statement) && ts.isStringLiteral(statement.expression)
         && statement.expression.text === "use client") continue;
       const start = statement.getStart(source);
