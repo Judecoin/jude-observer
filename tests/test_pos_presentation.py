@@ -54,7 +54,7 @@ class PosPresentationTests(unittest.TestCase):
             from flask import render_template
             header = {'height': 1, 'hash': 'a' * 64, 'major_version': 17, 'minor_version': 17,
                       'timestamp': 1792733088, 'block_size': 154, 'block_weight': 154,
-                      'reward': 8960000000, 'nonce': 0}
+                  'reward': 8960000000, 'nonce': 42}
             tx = {'tx_hash': 'b' * 64, 'vout': [{'amount': 8960000000}], 'size': 154, 'version': 3,
                   'extra': {}}
             html = render_template('block.html', info={'height': 2}, block_header=header,
@@ -62,6 +62,10 @@ class PosPresentationTests(unittest.TestCase):
                                    transactions=[], details_html=None)
             self.assertIn('Block Reward Transaction', html)
             self.assertNotIn('Miner Reward Transaction', html)
+            self.assertIn('Pulse', html)
+            self.assertNotIn('⛏ Mined', html)
+            self.assertNotIn('Hash Rate', html)
+            self.assertNotIn('Difficulty', html)
 
 
 if __name__ == '__main__':

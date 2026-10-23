@@ -25,9 +25,9 @@
                     {%elif block_header.height < info.height - 1%}
                         <span class="text-xs text-slate-400">({{info.height - 1 - block_header.height}} blocks ago)</span>
                     {%endif%}
-                    {%if 'nonce' in block_header and block_header['nonce'] != 0%}
+                    {%if block_header.major_version < 17 and block_header.get('nonce', 0) != 0%}
                         <span class="block-type-mined">⛏ Mined</span>
-                    {%elif block is defined and block and 'info' in block and 'pulse' in block.info%}
+                    {%elif block_header.major_version >= 17%}
                         <span class="block-type-pulse">💓 Pulse</span>
                     {%endif%}
                 </div>
@@ -55,7 +55,7 @@
                 <div class="stat-value">{{block_header.block_size | si}}B</div>
                 <div class="text-xs text-slate-400">{{(block_header.block_size - block_header.block_weight) | si}}B block + {{block_header.block_weight | si}}B txs</div>
             </div>
-            {%if 'nonce' in block_header and block_header['nonce'] != 0%}
+            {%if block_header.major_version < 17 and block_header.get('nonce', 0) != 0%}
                 <div class="stat-item" title="~ {{(block_header.difficulty / 120) | si }}H/s network hashrate&#10;Cumulative difficulty {{block_header.cumulative_difficulty}}&#10;Miner nonce: {{block_header.nonce}}">
                     <div class="stat-label">Difficulty</div>
                     <div class="stat-value">{{block_header.difficulty}}</div>
