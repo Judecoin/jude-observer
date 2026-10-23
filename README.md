@@ -23,7 +23,7 @@ manager, and socket permissions against the actual server before using them.
 Block explorer using Oxen 8+ LMQ RPC interface that does everything through RPC requests.  Sexy,
 awesome, safe.
 
-## Prerequisite packages 
+## Prerequisite packages
 
     sudo apt install build-essential pkg-config libsodium-dev libzmq3-dev python3-dev python3-flask python3-babel python3-pygments python3-oxenmq python3-pycryptodome python3-nacl python3-pysodium python3-qrcode
 
