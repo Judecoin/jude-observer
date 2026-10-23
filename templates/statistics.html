@@ -1,0 +1,212 @@
+{% extends "_basic.html" %}
+
+{% block title %}Statistics — {% endblock %}
+
+{% block head %}
+  {{ super() }}
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="section py-6">
+
+  <div class="mb-6">
+    <h1 class="text-2xl font-bold text-slate-900">Network Statistics</h1>
+    <p class="text-sm text-slate-500 mt-1">Real-time overview of Jude network, service nodes, and staking</p>
+  </div>
+
+  {# --- Node Overview Cards --- #}
+  <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 mb-6">
+    <div class="card p-4">
+      <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">Active Nodes</div>
+      <div class="text-2xl font-bold text-emerald-600 mt-1">{{ active_count }}</div>
+      <div class="text-xs text-slate-400 mt-0.5">{{ active_swarms }} swarms</div>
+    </div>
+    <div class="card p-4">
+      <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">Decommissioned</div>
+      <div class="text-2xl font-bold text-amber-600 mt-1">{{ inactive_count }}</div>
+      <div class="text-xs text-slate-400 mt-0.5">temporarily offline</div>
+    </div>
+    <div class="card p-4">
+      <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">Deregistered</div>
+      <div class="text-2xl font-bold text-rose-600 mt-1">{{ deregistered_count }}</div>
+      <div class="text-xs text-slate-400 mt-0.5">removed from network</div>
+    </div>
+    <div class="card p-4">
+      <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">Awaiting</div>
+      <div class="text-2xl font-bold text-blue-600 mt-1">{{ awaiting_count }}</div>
+      <div class="text-xs text-slate-400 mt-0.5">need contributions</div>
+    </div>
+    <div class="card p-4">
+      <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">Total Staked</div>
+      <div class="text-2xl font-bold text-emerald-600 mt-1">{{ total_staked | cash(tag=False, decimals=0) }}</div>
+      <div class="text-xs text-slate-400 mt-0.5">JUDE · {{ "%.1f" | format(staked_pct) }}% of supply</div>
+    </div>
+    <div class="card p-4">
+      <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">Staking Req.</div>
+      <div class="text-2xl font-bold text-slate-700 mt-1">{{ stake.staking_requirement | cash(tag=False, decimals=0) }}</div>
+      <div class="text-xs text-slate-400 mt-0.5">JUDE per node</div>
+    </div>
+  </div>
+
+  {# --- Node Status Chart --- #}
+  <div class="card p-4 mb-6 max-w-lg mx-auto">
+    <h2 class="text-sm font-semibold text-slate-700 uppercase tracking-wider mb-3">Node Status Distribution</h2>
+    <div class="flex items-center justify-center" style="height: 280px;">
+      <canvas id="nodeStatusChart"></canvas>
+    </div>
+  </div>
+
+  {# --- Network Health --- #}
+  <div class="card p-4 mb-6">
+    <h2 class="text-sm font-semibold text-slate-700 uppercase tracking-wider mb-3">Network Health</h2>
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div class="stat-item">
+        <div class="stat-label">Block Height</div>
+        <div class="stat-value">{{ "{:,}".format(info.height) }}</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">Hash Rate</div>
+        <div class="stat-value">~{{ hash_rate | si }}H/s</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">Difficulty</div>
+        <div class="stat-value">{{ info.difficulty | si }}</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">Block Target</div>
+        <div class="stat-value">{{ info.target }}s</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">Peers</div>
+        <div class="stat-value">{{ info.incoming_connections_count + info.outgoing_connections_count }}</div>
+        <div class="text-xs text-slate-400">{{ info.incoming_connections_count }} in / {{ info.outgoing_connections_count }} out</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">Mempool</div>
+        <div class="stat-value">{{ info.tx_pool_size }} txs</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">Total Transactions</div>
+        <div class="stat-value">{{ "{:,}".format(info.tx_count) }}</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">Blockchain Size</div>
+        <div class="stat-value">{{ info.database_size | si }}B</div>
+      </div>
+    </div>
+  </div>
+
+  {# --- Unstaking Tracker --- #}
+  <div class="card overflow-hidden mb-6">
+    <div class="px-4 py-3 border-b border-slate-200">
+      <h2 class="text-sm font-semibold text-slate-700 uppercase tracking-wider">Unstaking Tracker</h2>
+      <p class="text-xs text-slate-500 mt-0.5">Nodes requesting stake unlock — countdown to release</p>
+    </div>
+
+    {% if unstaking_nodes %}
+    <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 p-4 border-b border-slate-100">
+      <div>
+        <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">Pending Unlocks</div>
+        <div class="text-xl font-bold text-amber-600">{{ unstaking_count }}</div>
+      </div>
+      <div>
+        <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">Total JUDE Pending</div>
+        <div class="text-xl font-bold text-amber-600">{{ unstaking_total | cash(tag=False, decimals=0) }}</div>
+      </div>
+      <div class="hidden sm:block">
+        <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">Nearest Unlock</div>
+        <div class="text-xl font-bold text-emerald-600">{{ unstaking_nodes[0].eta_seconds | reltime(two_part=True) }}</div>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Node Pubkey</th>
+            <th>Staked</th>
+            <th class="hidden sm:table-cell">Unlock Height</th>
+            <th>Blocks Left</th>
+            <th>ETA</th>
+            <th class="hidden md:table-cell">Progress</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for node in unstaking_nodes %}
+          <tr>
+            <td class="font-mono text-xs"><a href="/sn/{{ node.pubkey }}">{{ node.pubkey | ellipsize(10, 6) }}</a></td>
+            <td class="font-medium">{{ node.staked | cash(tag=False, decimals=1) }}</td>
+            <td class="hidden sm:table-cell">{{ "{:,}".format(node.unlock_height) }}</td>
+            <td>
+              <span class="{% if node.blocks_remaining < 500 %}text-emerald-600{% elif node.blocks_remaining < 5000 %}text-amber-600{% else %}text-slate-600{% endif %} font-medium">
+                {{ "{:,}".format(node.blocks_remaining) }}
+              </span>
+            </td>
+            <td class="text-slate-600">{{ node.eta_seconds | reltime(two_part=True, in_ago=False) }}</td>
+            <td class="hidden md:table-cell">
+              {% set unlock_period = 10800 %}
+              {% set elapsed = unlock_period - node.blocks_remaining %}
+              {% set pct = [([elapsed / unlock_period * 100, 0] | max), 100] | min %}
+              <div class="flex items-center gap-2">
+                <div class="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
+                  <div class="h-full rounded-full {% if pct > 80 %}bg-emerald-500{% elif pct > 40 %}bg-amber-500{% else %}bg-brand-500{% endif %}" style="width: {{ "%.0f" | format(pct) }}%"></div>
+                </div>
+                <span class="text-xs text-slate-400 w-8 text-right">{{ "%.0f" | format(pct) }}%</span>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="p-8 text-center text-slate-400">
+      <p class="text-lg">No pending unlock requests</p>
+      <p class="text-sm mt-1">All service nodes are currently staked and active</p>
+    </div>
+    {% endif %}
+  </div>
+
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  var chartFont = { family: "'Inter', system-ui, sans-serif" };
+  Chart.defaults.font.family = chartFont.family;
+
+  new Chart(document.getElementById('nodeStatusChart'), {
+    type: 'doughnut',
+    data: {
+      labels: ['Active', 'Decommissioned', 'Deregistered', 'Awaiting'],
+      datasets: [{
+        data: [{{ active_count }}, {{ inactive_count }}, {{ deregistered_count }}, {{ awaiting_count }}],
+        backgroundColor: ['#059669', '#d97706', '#e11d48', '#3b82f6'],
+        borderWidth: 0,
+        hoverOffset: 6,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '60%',
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: { padding: 16, usePointStyle: true, pointStyle: 'circle' }
+        },
+        tooltip: {
+          callbacks: {
+            label: function(ctx) {
+              var total = ctx.dataset.data.reduce(function(a, b) { return a + b; }, 0);
+              var pct = total > 0 ? (ctx.parsed / total * 100).toFixed(1) : 0;
+              return ctx.label + ': ' + ctx.parsed + ' (' + pct + '%)';
+            }
+          }
+        }
+      }
+    }
+  });
+});
+</script>
+{% endblock %}

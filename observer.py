@@ -18,15 +18,95 @@ from pygments.formatters import HtmlFormatter
 import subprocess
 import qrcode
 from io import BytesIO
-import pysodium
+try:
+    import pysodium
+except Exception:
+    import pysodium_shim as pysodium
 import nacl.encoding
 import nacl.hash
 import base58
-# from Cryptodome.Hash import keccak
-from Crypto.Hash import keccak
+try:
+    from Cryptodome.Hash import keccak
+except ImportError:
+    from Crypto.Hash import keccak
 import config
 import local_config
-from lmq import FutureJSON, omq_connection
+from lmq import FutureJSON, omq_connection, MOCK_MODE
+import os, threading
+
+_dereg_cache = {'count': 0, 'height': 0}
+_dereg_lock = threading.Lock()
+_dereg_cache_file = os.path.join(os.path.dirname(__file__), 'dereg_cache.json')
+_dereg_last_update = 0
+
+def _load_dereg_cache():
+    global _dereg_cache
+    try:
+        with open(_dereg_cache_file) as f:
+            _dereg_cache = json.load(f)
+    except Exception:
+        pass
+
+def _save_dereg_cache():
+    try:
+        with open(_dereg_cache_file, 'w') as f:
+            json.dump(_dereg_cache, f)
+    except Exception:
+        pass
+
+def get_deregistered_count(omq, oxend, current_height):
+    if MOCK_MODE:
+        return 48
+    global _dereg_last_update
+    with _dereg_lock:
+        now = time.time()
+        if now - _dereg_last_update < 300:
+            return _dereg_cache['count']
+        if _dereg_cache['height'] == 0:
+            _load_dereg_cache()
+        scan_from = _dereg_cache.get('height', 0)
+        if current_height <= scan_from:
+            _dereg_last_update = now
+            return _dereg_cache['count']
+        new_dereg = 0
+        batch = 500
+        for start in range(scan_from, current_height, batch):
+            end = min(start + batch - 1, current_height - 1)
+            try:
+                fut = omq.request_future(oxend, 'rpc.get_block_headers_range',
+                    [json.dumps({'start_height': start, 'end_height': end, 'get_tx_hashes': True}).encode()], timeout=30)
+                result = fut.get()
+                if result[0] != b'200':
+                    continue
+                headers = json.loads(result[1]).get('headers', [])
+                tx_hashes = []
+                for h in headers:
+                    if 'tx_hashes' in h:
+                        tx_hashes.extend(h['tx_hashes'])
+                if not tx_hashes:
+                    continue
+                fut2 = omq.request_future(oxend, 'rpc.get_transactions',
+                    [json.dumps({'txs_hashes': tx_hashes, 'decode_as_json': True, 'tx_extra': True}).encode()], timeout=30)
+                result2 = fut2.get()
+                if result2[0] != b'200':
+                    continue
+                for tx in json.loads(result2[1]).get('txs', []):
+                    info_json = tx.get('info', {})
+                    if isinstance(info_json, str):
+                        info_json = json.loads(info_json)
+                    extra = info_json.get('extra', tx.get('extra', {}))
+                    if isinstance(extra, str):
+                        try: extra = json.loads(extra)
+                        except: extra = {}
+                    if extra.get('sn_state_change', {}).get('type') == 'dereg':
+                        new_dereg += 1
+            except Exception:
+                continue
+        _dereg_cache['count'] = _dereg_cache.get('count', 0) + new_dereg
+        _dereg_cache['height'] = current_height
+        _save_dereg_cache()
+        _dereg_last_update = now
+        return _dereg_cache['count']
 
 # Make a dict of config.* to pass to templating
 conf = {x: getattr(config, x) for x in dir(config) if not x.startswith('__')}
@@ -35,7 +115,12 @@ git_rev = subprocess.run(["git", "rev-parse", "--short=9", "HEAD"], stdout=subpr
 if git_rev.returncode == 0:
     git_rev = git_rev.stdout.strip()
 else:
-    git_rev = "(unknown)"
+    _ver_file = os.path.join(os.path.dirname(__file__), '.version')
+    try:
+        with open(_ver_file) as f:
+            git_rev = f.read().strip()
+    except OSError:
+        git_rev = ""
 
 app = flask.Flask(__name__)
 
@@ -51,7 +136,7 @@ app.url_map.converters['hex64'] = Hex64Converter
 
 @app.template_filter('format_datetime')
 def format_datetime(value, format='long'):
-    return babel.dates.format_datetime(value, format, tzinfo=babel.dates.get_timezone('UTC'))
+    return babel.dates.format_datetime(value, format, tzinfo=babel.dates.get_timezone('UTC'), locale='en_US')
 
 @app.template_filter('from_timestamp')
 def from_timestamp(value):
@@ -125,8 +210,8 @@ def format_si(value):
         i += 1
     return filter_round(value) + '{}'.format(si_suffix[i])
 
-@app.template_filter('jude')
-def format_jude(atomic, tag=True, fixed=False, decimals=9, zero=None):
+@app.template_filter('cash')
+def format_oxen(atomic, tag_name='JUDE', tag=True, fixed=False, decimals=9, zero=None):
     """Formats an atomic current value as a human currency value.
     tag - if False then don't append " JUDE"
     fixed - if True then don't strip insignificant trailing 0's and '.'
@@ -140,7 +225,7 @@ def format_jude(atomic, tag=True, fixed=False, decimals=9, zero=None):
         if not fixed and decimals > 0:
             disp = disp.rstrip('0').rstrip('.')
     if tag:
-        disp += ' JUDE'
+        disp += ' ' + tag_name
     return disp
 
 # For some inexplicable reason some hex fields are provided as array of byte integer values rather
@@ -179,8 +264,8 @@ def css():
     return flask.send_from_directory('static', 'style.css')
 
 
-def get_sns_future(omq, juded):
-    return FutureJSON(omq, juded, 'rpc.get_service_nodes', 5,
+def get_sns_future(omq, oxend):
+    return FutureJSON(omq, oxend, 'rpc.get_service_nodes', 5,
             args={
                 'all': False,
                 'fields': { x: True for x in ('service_node_pubkey', 'requested_unlock_height', 'last_reward_block_height',
@@ -195,7 +280,7 @@ def get_sns(sns_future, info_future):
     sn_states = sns_future.get()
     sn_states = sn_states['service_node_states'] if 'service_node_states' in sn_states else []
     for sn in sn_states:
-        sn['contribution_open'] = sn['staking_requirement'] - sn['total_reserved']
+        sn['contribution_open'] = sn['staking_requirement'] - sn.get('total_reserved', sn['total_contributed'])
         sn['contribution_required'] = sn['staking_requirement'] - sn['total_contributed']
         sn['num_contributions'] = sum(len(x['locked_contributions']) for x in sn['contributors'] if 'locked_contributions' in x)
 
@@ -210,8 +295,8 @@ def get_sns(sns_future, info_future):
     return awaiting_sns, active_sns, inactive_sns
 
 
-def get_quorums_future(omq, juded, height):
-    return FutureJSON(omq, juded, 'rpc.get_quorum_state', 30,
+def get_quorums_future(omq, oxend, height):
+    return FutureJSON(omq, oxend, 'rpc.get_quorum_state', 30,
             args={ 'start_height': height-55, 'end_height': height })
 
 
@@ -222,30 +307,55 @@ def get_quorums(quorums_future):
     quorums = quorums_future.get()
     quorums = quorums['quorums'] if 'quorums' in quorums else []
     for q in quorums:
-        if q['quorum_type'] <= len(qkey):
-            quo[qkey[q['quorum_type']]].append(q)
+        quorum_type = q.get('quorum_type')
+        if isinstance(quorum_type, int) and 0 <= quorum_type < len(qkey):
+            quo[qkey[quorum_type]].append(q)
         else:
-            print("Something getting wrong in quorums: found unknown quorum_type={}".format(q['quorum_type']), file=sys.stderr)
+            print("Something getting wrong in quorums: found unknown quorum_type={}".format(quorum_type), file=sys.stderr)
     return quo
 
-def get_mempool_future(omq, juded):
-    return FutureJSON(omq, juded, 'rpc.get_transaction_pool', 5, args={"tx_extra":True, "stake_info":True})
+def get_mempool_future(omq, oxend):
+    return FutureJSON(omq, oxend, 'rpc.get_transaction_pool', 5, args={"tx_extra":True, "tx_extra_raw": True, "stake_info":True})
 
 def parse_mempool(mempool_future):
     # mempool RPC return values are about as nasty as can be.  For each mempool tx, we get back
     # *both* binary+hex encoded values and JSON-encoded values slammed into a string, which means we
     # have to invoke an *extra* JSON parser for each tx.  This is terrible.
     mp = mempool_future.get()
+
+    # Oxen 10 and earlier return as 'transactions', 11+ returns 'txs' to unify with the
+    # `get_transactions` endpoint, so rewrite the Oxen 10 response to look like oxen 11+:
     if 'transactions' in mp:
+        rename = {
+                'id_hash': 'tx_hash',
+                'blob_size': 'size',
+                'max_used_block_id_hash': 'max_used_block',
+                'max_used_block_height': 'max_used_height',
+                'last_failed_id_hash': 'last_failed_hash',
+                'receive_time': 'received_timestamp',
+                'tx_blob': 'data',
+        }
+        for tx in mp['transactions']:
+            # Apparently, in Oxen 10 and earlier, *some* tx info is in the outer request, and *some*
+            # other info is inside a double-encoded "tx_json", so we have to merge them together.
+            # This is truly horrible, even by Monero standards.
+            info = json.loads(tx["tx_json"])
+            info['tx_extra_raw'] = bytes_to_hex(info['extra'])
+            del info['extra']
+            tx.update(info)
+
+            for from_k, to_k in rename.items():
+                tx[to_k] = tx.pop(from_k)
+
+        mp['txs'] = mp.pop('transactions')
+
+    if 'txs' in mp:
         # If we have a cached value we have already sorted it
         if '_sorted' not in mp:
-            mp['transactions'].sort(key=lambda tx: (tx['receive_time'], tx['id_hash']))
+            mp['txs'].sort(key=lambda tx: (tx['received_timestamp'], tx['tx_hash']))
             mp['_sorted'] = True
-
-        for tx in mp['transactions']:
-            tx['info'] = json.loads(tx["tx_json"])
     else:
-        mp['transactions'] = []
+        mp['txs'] = []
     return mp
 
 
@@ -269,20 +379,20 @@ def template_globals():
 @app.route('/v<int:style>') # debug while mucking with stylesheets
 @app.route('/')
 def main(refresh=None, page=0, per_page=None, first=None, last=None, style=None):
-    omq, juded = omq_connection()
-    inforeq = FutureJSON(omq, juded, 'rpc.get_info', 1)
-    stake = FutureJSON(omq, juded, 'rpc.get_staking_requirement', 10)
-    base_fee = FutureJSON(omq, juded, 'rpc.get_fee_estimate', 10)
-    hfinfo = FutureJSON(omq, juded, 'rpc.hard_fork_info', 10)
-    accrued = FutureJSON(omq, juded, 'rpc.get_accrued_batched_earnings', 1)
-    mempool = get_mempool_future(omq, juded)
-    sns = get_sns_future(omq, juded)
-    checkpoints = FutureJSON(omq, juded, 'rpc.get_checkpoints', args={"count": 3})
+    omq, oxend = omq_connection()
+    inforeq = FutureJSON(omq, oxend, 'rpc.get_info', 1)
+    stake = FutureJSON(omq, oxend, 'rpc.get_staking_requirement', 10)
+    base_fee = FutureJSON(omq, oxend, 'rpc.get_fee_estimate', 10)
+    hfinfo = FutureJSON(omq, oxend, 'rpc.hard_fork_info', 10)
+    accrued = FutureJSON(omq, oxend, 'rpc.get_accrued_batched_earnings', 1, fail_okay=True)
+    mempool = get_mempool_future(omq, oxend)
+    sns = get_sns_future(omq, oxend)
+    checkpoints = FutureJSON(omq, oxend, 'rpc.get_checkpoints', args={"count": 3})
 
-    # This call is slow the first time it gets called in juded but will be fast after that, so call
+    # This call is slow the first time it gets called in oxend but will be fast after that, so call
     # it with a very short timeout.  It's also an admin-only command, so will always fail if we're
     # using a restricted RPC interface.
-    coinbase = FutureJSON(omq, juded, 'admin.get_coinbase_tx_sum', 10, timeout=1, fail_okay=True,
+    coinbase = FutureJSON(omq, oxend, 'admin.get_coinbase_tx_sum', 10, timeout=1, fail_okay=True,
             args={"height":0, "count":2**31-1})
 
     custom_per_page = ''
@@ -294,8 +404,11 @@ def main(refresh=None, page=0, per_page=None, first=None, last=None, style=None)
     # We have some chained request dependencies here and below, so get() them as needed; all other
     # non-dependent requests should already have a future initiated above so that they can
     # potentially run in parallel.
-    info = inforeq.get()
-    height = info['height']
+    info             = inforeq.get()
+    height           = info['height']
+    info['testnet']  = info['nettype'] == 'testnet'
+    info['stagenet'] = info['nettype'] == 'stagenet'
+    info['devnet']   = info['nettype'] == 'devnet'
 
     # Permalinked block range:
     if first is not None and last is not None and 0 <= first <= last and last <= first + 99:
@@ -303,6 +416,8 @@ def main(refresh=None, page=0, per_page=None, first=None, last=None, style=None)
         if end_height - start_height + 1 != per_page:
             per_page = end_height - start_height + 1;
             custom_per_page = '/{}'.format(per_page)
+        if start_height > height:
+            flask.abort(404)
         # We generally can't get a perfect page number because our range (e.g. 5-14) won't line up
         # with pages (e.g. 10-19, 0-19), so just get as close as we can.  Next/Prev page won't be
         # quite right, but they'll be within half a page.
@@ -311,7 +426,7 @@ def main(refresh=None, page=0, per_page=None, first=None, last=None, style=None)
         end_height = max(0, height - per_page*page - 1)
         start_height = max(0, end_height - per_page + 1)
 
-    blocks = FutureJSON(omq, juded, 'rpc.get_block_headers_range', cache_key='main', args={
+    blocks = FutureJSON(omq, oxend, 'rpc.get_block_headers_range', cache_key='main', args={
         'start_height': start_height,
         'end_height': end_height,
         'get_tx_hashes': True,
@@ -328,17 +443,16 @@ def main(refresh=None, page=0, per_page=None, first=None, last=None, style=None)
             if 'tx_hashes' in b:
                 txids += b['tx_hashes']
         if txids:
-            txs = parse_txs(tx_req(omq, juded, txids, cache_key='mempool').get())
+            txs = parse_txs(tx_req(omq, oxend, txids, cache_key='recent').get())
             i = 0
             for tx in txs:
-                if 'vin' in tx['info'] and len(tx['info']['vin']) == 1 and 'gen' in tx['info']['vin'][0]:
+                if 'vin' in tx and len(tx['vin']) == 1 and 'gen' in tx['vin'][0]:
                     tx['coinbase'] = True
                 # TXs should come back in the same order so we can just skip ahead one when the block
                 # height changes rather than needing to search for the block
                 if blocks[i]['height'] != tx['block_height']:
                     i += 1
                     while i < len(blocks) and blocks[i]['height'] != tx['block_height']:
-                        print("Something getting wrong: missing txes?", file=sys.stderr)
                         i += 1
                     if i >= len(blocks):
                         print("Something getting wrong: have leftover txes")
@@ -347,36 +461,54 @@ def main(refresh=None, page=0, per_page=None, first=None, last=None, style=None)
 
     # Clean up the SN data a bit to make things easier for the templates
     awaiting_sns, active_sns, inactive_sns = get_sns(sns, inforeq)
+    deregistered_count = get_deregistered_count(omq, oxend, height)
+
+    accrued = accrued.get()
+    accrued_total = 0
+    if accrued:
+        accrued_total = (
+                sum(amt for wallet, amt in accrued['balances'].items()) if 'balances' in accrued else
+                sum(accrued['amounts']))
+
+    sync_warning = None
+    target_h = info.get('target_height', 0)
+    if target_h > height:
+        sync_warning = {'type': 'syncing', 'behind': target_h - height, 'target': target_h}
+    elif blocks:
+        latest_ts = blocks[-1].get('timestamp', 0)
+        age_minutes = (int(time.time()) - latest_ts) / 60
+        if age_minutes > 20:
+            sync_warning = {'type': 'stale', 'minutes': int(age_minutes)}
 
     return flask.render_template('index.html',
             info=info,
             stake=stake.get(),
             fees=base_fee.get(),
             emission=coinbase.get(),
-            # accrued_total=sum(accrued.get()['amounts']),
-            accrued_total=1111,
-
+            accrued_total=accrued_total,
             hf=hfinfo.get(),
             active_sns=active_sns,
             active_swarms=len(set(x['swarm_id'] for x in active_sns)),
             inactive_sns=inactive_sns,
             awaiting_sns=awaiting_sns,
+            deregistered_count=deregistered_count,
             blocks=blocks,
-            block_size_median=statistics.median(b['block_size'] for b in blocks),
+            block_size_median=statistics.median(b['block_size'] for b in blocks) if blocks else 0,
             page=page,
             per_page=per_page,
             custom_per_page=custom_per_page,
             mempool=parse_mempool(mempool),
             checkpoints=checkpoints.get(),
             refresh=refresh,
+            sync_warning=sync_warning,
             )
 
 
 @app.route('/txpool')
 def mempool():
-    omq, juded = omq_connection()
-    info = FutureJSON(omq, juded, 'rpc.get_info', 1)
-    mempool = get_mempool_future(omq, juded)
+    omq, oxend = omq_connection()
+    info = FutureJSON(omq, oxend, 'rpc.get_info', 1)
+    mempool = get_mempool_future(omq, oxend)
 
     return flask.render_template('mempool.html',
             info=info.get(),
@@ -385,59 +517,62 @@ def mempool():
 
 @app.route('/service_nodes')
 def sns():
-    omq, juded = omq_connection()
-    info = FutureJSON(omq, juded, 'rpc.get_info', 1)
-    awaiting, active, inactive = get_sns(get_sns_future(omq, juded), info)
+    omq, oxend = omq_connection()
+    info = FutureJSON(omq, oxend, 'rpc.get_info', 1)
+    awaiting, active, inactive = get_sns(get_sns_future(omq, oxend), info)
+    info_data = info.get()
 
     return flask.render_template('service_nodes.html',
-        info=info.get(),
+        info=info_data,
         active_sns=active,
         active_swarms=len(set(x['swarm_id'] for x in active)),
         awaiting_sns=awaiting,
         inactive_sns=inactive,
+        deregistered_count=get_deregistered_count(omq, oxend, info_data['height']),
         )
 
-def tx_req(omq, juded, txids, cache_key='single', **kwargs):
-    return FutureJSON(omq, juded, 'rpc.get_transactions', cache_seconds=10, cache_key=cache_key,
+def tx_req(omq, oxend, txids, cache_key='single', **kwargs):
+    return FutureJSON(omq, oxend, 'rpc.get_transactions', cache_seconds=10, cache_key=cache_key,
             args={
                 "txs_hashes": txids,
-                "decode_as_json": True,
+                "decode_as_json": True, # Can drop once we no longer need Oxen 10 support
                 "tx_extra": True,
+                "tx_extra_raw": True,
                 "prune": True,
                 "stake_info": True,
                 },
             **kwargs)
 
-def sn_req(omq, juded, pubkey, **kwargs):
-    return FutureJSON(omq, juded, 'rpc.get_service_nodes', 5, cache_key='single',
+def sn_req(omq, oxend, pubkey, **kwargs):
+    return FutureJSON(omq, oxend, 'rpc.get_service_nodes', 5, cache_key='single',
             args={"service_node_pubkeys": [pubkey]}, **kwargs
         )
 
 
-def block_header_req(omq, juded, hash_or_height, **kwargs):
+def block_header_req(omq, oxend, hash_or_height, **kwargs):
     if isinstance(hash_or_height, int) or (len(hash_or_height) <= 10 and hash_or_height.isdigit()):
-        return FutureJSON(omq, juded, 'rpc.get_block_header_by_height', cache_key='single',
+        return FutureJSON(omq, oxend, 'rpc.get_block_header_by_height', cache_key='single',
                 args={ "height": int(hash_or_height) }, **kwargs)
     else:
-        return FutureJSON(omq, juded, 'rpc.get_block_header_by_hash', cache_key='single',
+        return FutureJSON(omq, oxend, 'rpc.get_block_header_by_hash', cache_key='single',
                 args={ 'hash': hash_or_height }, **kwargs)
 
 
-def block_with_txs_req(omq, juded, hash_or_height, **kwargs):
+def block_with_txs_req(omq, oxend, hash_or_height, **kwargs):
     args = { 'get_tx_hashes': True }
     if isinstance(hash_or_height, int) or (len(hash_or_height) <= 10 and hash_or_height.isdigit()):
         args['height'] = int(hash_or_height)
     else:
         args['hash'] = hash_or_height
 
-    return FutureJSON(omq, juded, 'rpc.get_block', cache_key='single', args=args, **kwargs)
+    return FutureJSON(omq, oxend, 'rpc.get_block', cache_key='single', args=args, **kwargs)
 
-def ons_info(omq, juded, name,ons_type,**kwargs):
+def ons_info(omq, oxend, name,ons_type,**kwargs):
     if ons_type == 2:
         name=name+'.loki'
     name_hash = nacl.hash.blake2b(name.encode(), encoder = nacl.encoding.Base64Encoder)
 
-    return FutureJSON(omq, juded, 'rpc.ons_names_to_owners', args={
+    return FutureJSON(omq, oxend, 'rpc.ons_names_to_owners', args={
       "entries": [{'name_hash':name_hash.decode('ascii'),'types':[ons_type]}]})
 
 
@@ -445,8 +580,8 @@ def ons_info(omq, juded, name,ons_type,**kwargs):
 @app.route('/ons/<string:name>/<int:more_details>')
 def show_ons(name, more_details=False):
     name = name.lower()
-    omq, juded = omq_connection()
-    info = FutureJSON(omq, juded, 'rpc.get_info', 1)
+    omq, oxend = omq_connection()
+    info = FutureJSON(omq, oxend, 'rpc.get_info', 1)
 
     if len(name) > 64 or not all(c.isalnum() or c in '_-' for c in name):
         return flask.render_template('not_found.html',
@@ -462,7 +597,7 @@ def show_ons(name, more_details=False):
     LOKINET_ENCRYPTED_LENGTH = 144  # The user must update their session mapping.
 
     for ons_type in ons_types:
-        onsinfo = ons_info(omq, juded, name, ons_types[ons_type]).get()
+        onsinfo = ons_info(omq, oxend, name, ons_types[ons_type]).get()
 
         if 'entries' not in onsinfo:
             # If returned with no data from the RPC
@@ -478,7 +613,7 @@ def show_ons(name, more_details=False):
             if len(onsinfo['encrypted_value']) not in [SESSION_ENCRYPTED_LENGTH, WALLET_ENCRYPTED_LENGTH, LOKINET_ENCRYPTED_LENGTH]:
                 # Encryption involves a much more expensive argon2-based calculation for HF15 registrations.
                 # Owners should be notified they should update to the new encryption format.
-                ons_data[ons_type] = ons_info(omq, juded, name,ons_types[ons_type]).get()['entries'][0]
+                ons_data[ons_type] = ons_info(omq, oxend, name,ons_types[ons_type]).get()['entries'][0]
                 ons_data[ons_type]['mapping'] = 'Owner needs to update their ID for mapping info.'
                 
             else:
@@ -569,11 +704,11 @@ def show_ons(name, more_details=False):
 @app.route('/sn/<hex64:pubkey>')
 @app.route('/sn/<hex64:pubkey>/<int:more_details>')
 def show_sn(pubkey, more_details=False):
-    omq, juded = omq_connection()
-    info = FutureJSON(omq, juded, 'rpc.get_info', 1)
-    hfinfo = FutureJSON(omq, juded, 'rpc.hard_fork_info', 10)
-    sn = sn_req(omq, juded, pubkey).get()
-    quos = get_quorums_future(omq, juded, info.get()['height'])
+    omq, oxend = omq_connection()
+    info = FutureJSON(omq, oxend, 'rpc.get_info', 1)
+    hfinfo = FutureJSON(omq, oxend, 'rpc.hard_fork_info', 10)
+    sn = sn_req(omq, oxend, pubkey).get()
+    quos = get_quorums_future(omq, oxend, info.get()['height'])
 
 
     if 'service_node_states' not in sn or not sn['service_node_states']:
@@ -589,9 +724,9 @@ def show_sn(pubkey, more_details=False):
     # Number of staked contributions
     sn['num_contributions'] = sum(len(x["locked_contributions"]) for x in sn["contributors"] if "locked_contributions" in x)
     # Number of unfilled, reserved contribution spots:
-    sn['num_reserved_spots'] = sum(x["amount"] < x["reserved"] for x in sn["contributors"])
+    sn['num_reserved_spots'] = sum('reserved' in x and x["amount"] < x["reserved"] for x in sn["contributors"])
     # Available open contribution spots:
-    sn['num_open_spots'] = 0 if sn['total_reserved'] >= sn['staking_requirement'] else max(0, 4 - sn['num_contributions'] - sn['num_reserved_spots'])
+    sn['num_open_spots'] = 0 if sn.get('total_reserved', sn['total_contributed']) >= sn['staking_requirement'] else max(0, 4 - sn['num_contributions'] - sn['num_reserved_spots'])
 
     if more_details:
         formatter = HtmlFormatter(cssclass="syntax-highlight", style="paraiso-dark")
@@ -609,6 +744,67 @@ def show_sn(pubkey, more_details=False):
             quorums=get_quorums(quos),
             **more_details,
             )
+
+
+@app.route('/statistics')
+def statistics_page():
+    omq, oxend = omq_connection()
+    inforeq = FutureJSON(omq, oxend, 'rpc.get_info', 1)
+    stake = FutureJSON(omq, oxend, 'rpc.get_staking_requirement', 10)
+    sns = get_sns_future(omq, oxend)
+    coinbase = FutureJSON(omq, oxend, 'admin.get_coinbase_tx_sum', 10, timeout=1, fail_okay=True,
+            args={"height":0, "count":2**31-1})
+
+    info = inforeq.get()
+    awaiting_sns, active_sns, inactive_sns = get_sns(sns, inforeq)
+
+    all_funded = active_sns + inactive_sns
+    all_sns = active_sns + inactive_sns + awaiting_sns
+
+    deregistered_count = get_deregistered_count(omq, oxend, info['height'])
+
+    total_staked = sum(sn['total_contributed'] for sn in all_funded)
+    staking_req = stake.get()
+
+    height = info['height']
+    target = info.get('target', 120)
+    unstaking_nodes = []
+    for sn in all_sns:
+        if sn.get('requested_unlock_height', 0) > 0:
+            blocks_remaining = max(0, sn['requested_unlock_height'] - height)
+            unstaking_nodes.append({
+                'pubkey': sn['service_node_pubkey'],
+                'operator': sn.get('operator_address', ''),
+                'staked': sn['total_contributed'],
+                'unlock_height': sn['requested_unlock_height'],
+                'blocks_remaining': blocks_remaining,
+                'eta_seconds': blocks_remaining * target,
+            })
+    unstaking_nodes.sort(key=lambda x: x['blocks_remaining'])
+    unstaking_total = sum(n['staked'] for n in unstaking_nodes)
+
+    hash_rate = info.get('difficulty', 0) / max(target, 1)
+
+    emission = coinbase.get()
+    circulating = (emission['emission_amount'] - emission['burn_amount']) if emission else 0
+    staked_pct = (total_staked / circulating * 100) if circulating > 0 else 0
+
+    return flask.render_template('statistics.html',
+        info=info,
+        stake=staking_req,
+        active_count=len(active_sns),
+        inactive_count=len(inactive_sns),
+        awaiting_count=len(awaiting_sns),
+        deregistered_count=deregistered_count,
+        total_nodes=len(all_sns),
+        active_swarms=len(set(x['swarm_id'] for x in active_sns)),
+        total_staked=total_staked,
+        staked_pct=staked_pct,
+        unstaking_nodes=unstaking_nodes,
+        unstaking_count=len(unstaking_nodes),
+        unstaking_total=unstaking_total,
+        hash_rate=hash_rate,
+    )
 
 
 @app.route('/qr/<hex64:pubkey>')
@@ -638,18 +834,25 @@ def parse_txs(txs_rpc):
         return []
 
     for tx in txs_rpc['txs']:
-        if 'info' not in tx:
-            # We have serialized JSON data inside a field in the JSON, because of juded's
+        if 'type' not in tx and 'as_json' in tx:
+            # Pre Oxen 11 scrammed the details into "as_json" that we have to parse again
+            # We have serialized JSON data inside a field in the JSON, because of oxend's
             # multiple incompatible JSON generators 🤮:
-            tx['info'] = json.loads(tx["as_json"])
+            info = json.loads(tx["as_json"])
             del tx['as_json']
             # The "extra" field inside as_json is retardedly in per-byte integer values,
             # convert it to a hex string 🤮:
-            tx['info']['extra'] = bytes_to_hex(tx['info']['extra'])
+            info['tx_extra_raw'] = bytes_to_hex(info['extra'])
+            del info['extra']
+            tx.update(info)
+
     return txs_rpc['txs']
 
 
-def get_block_txs_future(omq, juded, block):
+def get_block_txs_future(omq, oxend, block):
+    if not isinstance(block, dict) or 'block_header' not in block:
+        return None
+
     hashes = []
     if 'tx_hashes' in block:
         hashes += block['tx_hashes']
@@ -659,12 +862,15 @@ def get_block_txs_future(omq, juded, block):
     if 'info' not in block:
         try:
             block['info'] = json.loads(block["json"])
-            del block['info']['miner_tx']  # Doesn't include enough for us, we fetch it separately with extra interpretation instead
+            if 'miner_tx' in block['info']:
+                # Doesn't include enough for us, we fetch it separately with extra interpretation instead
+                del block['info']['miner_tx']
             del block["json"]
         except Exception as e:
+            block_height = block.get('block_header', {}).get('height', '(unknown)')
             print("Something getting wrong: cannot parse block json for block {}: {}".format(block_height, e), file=sys.stderr)
 
-    return tx_req(omq, juded, hashes, cache_key='block')
+    return tx_req(omq, oxend, hashes, cache_key='block')
 
 
 @app.route('/block/<int:height>')
@@ -672,16 +878,16 @@ def get_block_txs_future(omq, juded, block):
 @app.route('/block/<hex64:hash>')
 @app.route('/block/<hex64:hash>/<int:more_details>')
 def show_block(height=None, hash=None, more_details=False):
-    omq, juded = omq_connection()
-    info = FutureJSON(omq, juded, 'rpc.get_info', 1)
-    hfinfo = FutureJSON(omq, juded, 'rpc.hard_fork_info', 10)
+    omq, oxend = omq_connection()
+    info = FutureJSON(omq, oxend, 'rpc.get_info', 1)
+    hfinfo = FutureJSON(omq, oxend, 'rpc.hard_fork_info', 10)
     if height is not None:
         val = height
     elif hash is not None:
         val = hash
 
-    block = None if val is None else block_with_txs_req(omq, juded, val).get()
-    if block is None:
+    block = None if val is None else block_with_txs_req(omq, oxend, val).get()
+    if not isinstance(block, dict) or 'block_header' not in block:
         return flask.render_template("not_found.html",
                 info=info.get(),
                 hfinfo=hfinfo.get(),
@@ -692,10 +898,10 @@ def show_block(height=None, hash=None, more_details=False):
 
     next_block = None
     block_height = block['block_header']['height']
-    txs = get_block_txs_future(omq, juded, block)
+    txs = get_block_txs_future(omq, oxend, block)
 
     if info.get()['height'] > 1 + block_height:
-        next_block = block_header_req(omq, juded, '{}'.format(block_height + 1))
+        next_block = block_header_req(omq, oxend, '{}'.format(block_height + 1))
 
     if more_details:
         formatter = HtmlFormatter(cssclass="syntax-highlight", style="native")
@@ -723,17 +929,17 @@ def show_block(height=None, hash=None, more_details=False):
 
 @app.route('/block/latest')
 def show_block_latest():
-    omq, juded = omq_connection()
-    height = FutureJSON(omq, juded, 'rpc.get_info', 1).get()['height'] - 1
+    omq, oxend = omq_connection()
+    height = FutureJSON(omq, oxend, 'rpc.get_info', 1).get()['height'] - 1
     return flask.redirect(flask.url_for('show_block', height=height), code=302)
 
 
 @app.route('/tx/<hex64:txid>')
 @app.route('/tx/<hex64:txid>/<int:more_details>')
 def show_tx(txid, more_details=False):
-    omq, juded = omq_connection()
-    info = FutureJSON(omq, juded, 'rpc.get_info', 1)
-    txs = tx_req(omq, juded, [txid]).get()
+    omq, oxend = omq_connection()
+    info = FutureJSON(omq, oxend, 'rpc.get_info', 1)
+    txs = tx_req(omq, oxend, [txid]).get()
 
     if 'txs' not in txs or not txs['txs']:
         return flask.render_template('not_found.html',
@@ -745,19 +951,19 @@ def show_tx(txid, more_details=False):
 
     # If this is a state change, see if we have the quorum stored to provide context
     testing_quorum = None
-    if tx['info']['version'] >= 4 and 'sn_state_change' in tx['extra']:
-        testing_quorum = FutureJSON(omq, juded, 'rpc.get_quorum_state', 60, cache_key='tx_state_change',
+    if tx['version'] >= 4 and 'sn_state_change' in tx['extra']:
+        testing_quorum = FutureJSON(omq, oxend, 'rpc.get_quorum_state', 60, cache_key='tx_state_change',
                 args={ 'quorum_type': 0, 'start_height': tx['extra']['sn_state_change']['height'] })
 
     kindex_info = {} # { amount => { keyindex => {output-info} } }
     block_info_req = None
-    if 'vin' in tx['info']:
-        if len(tx['info']['vin']) == 1 and 'gen' in tx['info']['vin'][0]:
+    if 'vin' in tx:
+        if len(tx['vin']) == 1 and 'gen' in tx['vin'][0]:
             tx['coinbase'] = True
-        elif tx['info']['vin'] and config.enable_mixins_details:
+        elif tx['vin'] and config.enable_mixins_details:
             # Load output details for all outputs contained in the inputs
             outs_req = []
-            for inp in tx['info']['vin']:
+            for inp in tx['vin']:
                 # Key positions are stored as offsets from the previous index rather than indices,
                 # so de-delta them back into indices:
                 if 'key_offsets' in inp['key'] and 'key_indices' not in inp['key']:
@@ -769,19 +975,19 @@ def show_tx(txid, more_details=False):
                         kis.append(kbase)
                     del inp['key']['key_offsets']
 
-            outs_req = [{"amount":inp['key']['amount'], "index":ki} for inp in tx['info']['vin'] for ki in inp['key']['key_indices']]
-            outputs = FutureJSON(omq, juded, 'rpc.get_outs', args={
+            outs_req = [{"amount":inp['key']['amount'], "index":ki} for inp in tx['vin'] for ki in inp['key']['key_indices']]
+            outputs = FutureJSON(omq, oxend, 'rpc.get_outs', args={
                 'get_txid': True,
                 'outputs': outs_req,
                 }).get()
             if outputs and 'outs' in outputs and len(outputs['outs']) == len(outs_req):
                 outputs = outputs['outs']
                 # Also load block details for all of those outputs:
-                block_info_req = FutureJSON(omq, juded, 'rpc.get_block_header_by_height', args={
+                block_info_req = FutureJSON(omq, oxend, 'rpc.get_block_header_by_height', args={
                     'heights': [o["height"] for o in outputs]
                 })
                 i = 0
-                for inp in tx['info']['vin']:
+                for inp in tx['vin']:
                     amount = inp['key']['amount']
                     if amount not in kindex_info:
                         kindex_info[amount] = {}
@@ -827,9 +1033,9 @@ def show_tx(txid, more_details=False):
 
 @app.route('/quorums')
 def show_quorums():
-    omq, juded = omq_connection()
-    info = FutureJSON(omq, juded, 'rpc.get_info', 1)
-    quos = get_quorums_future(omq, juded, info.get()['height'])
+    omq, oxend = omq_connection()
+    info = FutureJSON(omq, oxend, 'rpc.get_info', 1)
+    quos = get_quorums_future(omq, oxend, info.get()['height'])
 
     return flask.render_template('quorums.html',
             info=info.get(),
@@ -843,8 +1049,8 @@ base32z_map = {base32z_dict[i]: i for i in range(len(base32z_dict))}
 
 @app.route('/search')
 def search():
-    omq, juded = omq_connection()
-    info = FutureJSON(omq, juded, 'rpc.get_info', 1)
+    omq, oxend = omq_connection()
+    info = FutureJSON(omq, oxend, 'rpc.get_info', 1)
     val = (flask.request.args.get('value') or '').strip()
     if val and len(val) < 10 and val.isdigit(): # Block height
         return flask.redirect(flask.url_for('show_block', height=val), code=301)
@@ -859,9 +1065,9 @@ def search():
 
     if len(val) == 64: 
         # Initiate all the lookups at once, then redirect to whichever one responds affirmatively
-        snreq = sn_req(omq, juded, val)
-        blreq = block_header_req(omq, juded, val, fail_okay=True)
-        txreq = tx_req(omq, juded, [val])
+        snreq = sn_req(omq, oxend, val)
+        blreq = block_header_req(omq, oxend, val, fail_okay=True)
+        txreq = tx_req(omq, oxend, [val])
         
         sn = snreq.get()
         if sn and 'service_node_states' in sn and sn['service_node_states']:
@@ -876,7 +1082,7 @@ def search():
             return flask.redirect(flask.url_for('show_tx', txid=val), code=301)
 
     if val and len(val) <= 68 and val.endswith(".loki"):
-        val = val.rstrip('.loki')
+        val = val[:-5]
 
     # ONS can be of length 64 however with txids, and sn pubkey's being of length 64 
     # I have removed it from the possible searches.
@@ -892,9 +1098,9 @@ def search():
 
 @app.route('/api/networkinfo')
 def api_networkinfo():
-    omq, juded = omq_connection()
-    info = FutureJSON(omq, juded, 'rpc.get_info', 1)
-    hfinfo = FutureJSON(omq, juded, 'rpc.hard_fork_info', 10)
+    omq, oxend = omq_connection()
+    info = FutureJSON(omq, oxend, 'rpc.get_info', 1)
+    hfinfo = FutureJSON(omq, oxend, 'rpc.hard_fork_info', 10)
 
     info = info.get()
     data = {**info}
@@ -906,9 +1112,9 @@ def api_networkinfo():
 
 @app.route('/api/emission')
 def api_emission():
-    omq, juded = omq_connection()
-    info = FutureJSON(omq, juded, 'rpc.get_info', 1)
-    coinbase = FutureJSON(omq, juded, 'admin.get_coinbase_tx_sum', 10, timeout=1, fail_okay=True,
+    omq, oxend = omq_connection()
+    info = FutureJSON(omq, oxend, 'rpc.get_info', 1)
+    coinbase = FutureJSON(omq, oxend, 'admin.get_coinbase_tx_sum', 10, timeout=1, fail_okay=True,
             args={"height":0, "count":2**31-1}).get()
     if not coinbase:
         return flask.jsonify(None)
@@ -928,10 +1134,10 @@ def api_emission():
 
 @app.route('/api/service_node_stats')
 def api_service_node_stats():
-    omq, juded = omq_connection()
-    info = FutureJSON(omq, juded, 'rpc.get_info', 1)
-    stakinginfo = FutureJSON(omq, juded, 'rpc.get_staking_requirement', 30)
-    sns = get_sns_future(omq, juded)
+    omq, oxend = omq_connection()
+    info = FutureJSON(omq, oxend, 'rpc.get_info', 1)
+    stakinginfo = FutureJSON(omq, oxend, 'rpc.get_staking_requirement', 30)
+    sns = get_sns_future(omq, oxend)
     sns = sns.get()
     if 'service_node_states' not in sns:
         return flask.jsonify({"status": "Error retrieving SN stats"}), 500
@@ -963,8 +1169,8 @@ def api_service_node_stats():
 
 @app.route('/api/circulating_supply')
 def api_circulating_supply():
-    omq, juded = omq_connection()
-    coinbase = FutureJSON(omq, juded, 'admin.get_coinbase_tx_sum', 10, timeout=1, fail_okay=True,
+    omq, oxend = omq_connection()
+    coinbase = FutureJSON(omq, oxend, 'admin.get_coinbase_tx_sum', 10, timeout=1, fail_okay=True,
             args={"height":0, "count":2**31-1}).get()
     return flask.jsonify((coinbase["emission_amount"] - coinbase["burn_amount"]) // 1_000_000_000 if coinbase else None)
 
@@ -972,27 +1178,34 @@ def api_circulating_supply():
 # FIXME: need better error handling here
 @app.route('/api/transaction/<hex64:txid>')
 def api_tx(txid):
-    omq, juded = omq_connection()
-    tx = tx_req(omq, juded, [txid]).get()
+    omq, oxend = omq_connection()
+    tx = tx_req(omq, oxend, [txid]).get()
+    if not isinstance(tx, dict):
+        return flask.jsonify({"status": "ERROR", "data": None}), 502
     txs = parse_txs(tx)
     return flask.jsonify({
-        "status": tx['status'],
+        "status": tx.get('status', "OK" if txs else "NOT FOUND"),
         "data": (txs[0] if txs else None),
-        })
+        }), (200 if txs else 404)
 
 @app.route('/api/block/<int:height>')
 @app.route('/api/block/<hex64:blkid>')
 def api_block(blkid=None, height=None):
-    omq, juded = omq_connection()
-    block = block_with_txs_req(omq, juded, blkid if blkid is not None else height).get()
-    txs = get_block_txs_future(omq, juded, block)
+    omq, oxend = omq_connection()
+    block = block_with_txs_req(omq, oxend, blkid if blkid is not None else height).get()
+    if not isinstance(block, dict) or 'block_header' not in block:
+        status = block.get('status', 'NOT FOUND') if isinstance(block, dict) else 'ERROR'
+        return flask.jsonify({
+            "status": status,
+            "data": None,
+            }), 404
 
-    if 'block_header' in block:
-        data = block['block_header'].copy()
-        data["txs"] = parse_txs(txs.get()).copy()
+    txs = get_block_txs_future(omq, oxend, block)
+    data = block['block_header'].copy()
+    data["txs"] = parse_txs(txs.get()).copy() if txs is not None else []
 
     return flask.jsonify({
-        "status": block['status'],
+        "status": block.get('status', 'OK'),
         "data": data,
         })
 
@@ -1002,33 +1215,39 @@ ticker_cache, ticker_cache_expires = {}, None
 @app.route('/api/price/<fiat>')
 def api_price(fiat=None):
     global ticker_cache, ticker_cache_expires, ticker_vs, ticker_vs_expires
-    # TODO: will need to change to 'jude' when/if the ticker changes:
+    # TODO: will need to change to 'oxen' when/if the ticker changes:
     ticker = 'loki-network'
 
     if not ticker_cache or not ticker_cache_expires or ticker_cache_expires < time.time():
         if not ticker_vs_expires or ticker_vs_expires < time.time():
             try:
-                x = requests.get("https://api.coingecko.com/api/v3/simple/supported_vs_currencies").json()
+                x = requests.get(
+                    "https://api.coingecko.com/api/v3/simple/supported_vs_currencies",
+                    timeout=(3.05, 10),
+                ).json()
                 if x:
                     ticker_vs = x
                     ticker_vs_expires = time.time() + 300
-            except RuntimeError as e:
+            except (requests.RequestException, ValueError) as e:
                 print("Failed to retrieve vs currencies: {}".format(e), file=sys.stderr)
                 # ignore failure because we might have an old value that is still usable
 
         if not ticker_vs:
-            raise RuntimeError("Failed to retrieve CoinGecko currency list")
+            return flask.jsonify({"error": "Failed to retrieve CoinGecko currency list"}), 503
 
+        x = None
         try:
             x = requests.get("https://api.coingecko.com/api/v3/simple/price?ids={}&vs_currencies={}".format(
-                ticker, ",".join(ticker_vs))).json()
-        except RuntimeError as e:
+                ticker, ",".join(ticker_vs)), timeout=(3.05, 10)).json()
+        except (requests.RequestException, ValueError) as e:
             print("Failed to retrieve prices: {}".format(e), file=sys.stderr)
 
         if not x or ticker not in x or not x[ticker]:
-            raise RuntimeError("Failed to retrieve prices from CoinGecko")
-        ticker_cache = x[ticker]
-        ticker_cache_expires = time.time() + 60
+            if not ticker_cache:
+                return flask.jsonify({"error": "Failed to retrieve prices from CoinGecko"}), 503
+        else:
+            ticker_cache = x[ticker]
+            ticker_cache_expires = time.time() + 60
 
     if fiat is None:
         return flask.jsonify(ticker_cache)

@@ -1,39 +1,51 @@
-<table style="width:100%">
+<div class="table-wrap">
+<table class="data-table">
     <thead>
         <tr>
-            <td>Public Key</td>
-            <td>Contri&shy;butors</td>
-            <td>Operator Fee (%)</td>
-            <td>Staking Requirement</td>
-            <td title="Can also be the height of the last activation, IP penalty, or recommission">Last Reward Height</td>
-            <td>Last Uptime Proof</td>
-            <td>Expiry Date UTC (Estimated)</td>
+            <th class="hidden sm:table-cell">Status</th>
+            <th>Public Key</th>
+            <th class="text-center">Contributors</th>
+            <th class="text-center">Op Fee (%)</th>
+            <th>Staking Req</th>
+            <th class="text-center" title="Can also be the height of the last activation, IP penalty, or recommission">Last Reward</th>
+            <th class="text-center">Last Uptime</th>
+            <th class="text-center">Expiry (EST)</th>
         </tr>
     </thead>
-
     <tbody>
         {%for sn in (active_sns | sort(attribute='last_reward_block_height,last_reward_transaction_index,service_node_pubkey'))[:limit_active]%}
-
             <tr>
-                {%include 'include/sn_kcf.html'%}
-                <td>{{sn.staking_requirement | jude(tag=false, fixed=true)}}</td>
-                <td>{{sn.last_reward_block_height}}</td>
-                <td>{{sn.last_uptime_proof | from_timestamp | ago if sn.last_uptime_proof > 0 else "Not Received"}}</td>
-                <td>
+                <td class="hidden sm:table-cell">
                     {%if sn.requested_unlock_height%}
-                        <span title="Service Node unlock in progress (unlocks at block {{sn.requested_unlock_height}})">🔓</span>
-                        {{((sn.requested_unlock_height - info.height) * 120 + server.datetime.timestamp()) | from_timestamp | format_datetime('short')}}
-                        ({{((sn.requested_unlock_height - info.height) * 120) | reltime}})
+                        <span class="badge badge-warning">Unlocking</span>
                     {%else%}
-                        Staking Infinitely
+                        <span class="badge badge-active">Active</span>
+                    {%endif%}
+                </td>
+                {%include 'include/sn_kcf.html'%}
+                <td>{{sn.staking_requirement | cash(tag=false, fixed=true)}}</td>
+                <td class="text-center">{{sn.last_reward_block_height}}</td>
+                <td class="text-center">{{sn.last_uptime_proof | from_timestamp | ago if sn.last_uptime_proof > 0 else "Not Received"}}</td>
+                <td class="text-center">
+                    {%if sn.requested_unlock_height%}
+                        <span title="Unlock in progress (block {{sn.requested_unlock_height}})">🔓</span>
+                        {{((sn.requested_unlock_height - info.height) * 120 + server.datetime.timestamp()) | from_timestamp | format_datetime('short')}}
+                        <span class="text-xs text-slate-500">({{((sn.requested_unlock_height - info.height) * 120) | reltime}})</span>
+                    {%else%}
+                        <span class="text-slate-400">∞</span>
                     {%endif%}
                 </td>
             </tr>
         {%endfor%}
     </tbody>
     {%if limit_active and active_sns|length > limit_active%}
-    <tr>
-        <td class="sn-more" colspan="7"><a href="/service_nodes">+ {{active_sns|length - limit_active}} more ↪</a></td>
-    </tr>
+    <tfoot>
+        <tr>
+            <td colspan="8" class="text-center py-2">
+                <a href="/service_nodes" class="text-sm text-brand-600 hover:text-brand-700">+ {{active_sns|length - limit_active}} more &rarr;</a>
+            </td>
+        </tr>
+    </tfoot>
     {%endif%}
 </table>
+</div>

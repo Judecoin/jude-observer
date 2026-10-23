@@ -1,46 +1,53 @@
-
-<table style="width:100%">
+<div class="table-wrap">
+<table class="data-table">
     <thead>
         <tr>
-            <td>Public Key</td>
-            <td>Contributors</td>
-            <td>Operator Fee (%)</td>
-            <td>Contributed</td>
-            <td>Open For Contribution</td>
-            <td>Min. Contribution</td>
-            <td>Expiry Date UTC (Estimated)</td>
+            <th class="hidden sm:table-cell">Status</th>
+            <th>Public Key</th>
+            <th class="text-center">Contributors</th>
+            <th class="text-center">Op Fee (%)</th>
+            <th>Contributed</th>
+            <th>Open</th>
+            <th>Min. Contribution</th>
+            <th>Expiry (EST)</th>
         </tr>
     </thead>
-
     <tbody>
-        {%set max_contributors = 10 if 'hard_fork' in info and info.hard_fork >= 19 else 4 %}
+        {%set max_contributors = 10 if 'hard_fork' in info and info.hard_fork >= 19 else 9 %}
         {%for sn in (awaiting_sns | sort(attribute='portions_for_operator,contribution_open,contribution_required,service_node_pubkey'))[:limit_awaiting]%}
             <tr>
+                <td class="hidden sm:table-cell"><span class="badge badge-warning">Awaiting</span></td>
                 {%include 'include/sn_kcf.html'%}
-                <td>{{sn.total_contributed | jude(tag=false, fixed=true)}}</td>
-                {%if sn.total_reserved >= sn.staking_requirement%}
-                    <td title="All remaining contribution room is reserved for specific contributors">
-                        ⛔ {{sn.contribution_open | jude(tag=false, fixed=true)}}
+                <td>{{sn.total_contributed | cash(tag=false, fixed=true)}}</td>
+                {% set total_stakes = sn.total_reserved if 'total_reserved' in sn else sn.total_contributed %}
+                {%if total_stakes >= sn.staking_requirement%}
+                    <td title="All remaining room is reserved">
+                        <span class="text-red-500">⛔</span> {{sn.contribution_open | cash(tag=false, fixed=true)}}
                     </td>
                 {%else%}
-                    <td>{{sn.contribution_open | jude(tag=false, fixed=true)}}</td>
+                    <td>{{sn.contribution_open | cash(tag=false, fixed=true)}}</td>
                 {%endif%}
-                <td>{{ (0 if sn.num_contributions >= max_contributors else (sn.contribution_open / (max_contributors - sn.num_contributions)) | round(method='ceil')) | jude(tag=false, fixed=true) }}</td>
+                <td>{{ (0 if sn.num_contributions >= max_contributors else (sn.contribution_open / (max_contributors - sn.num_contributions)) | round(method='ceil')) | cash(tag=false, fixed=true) }}</td>
                 <td>
                     {%if sn.requested_unlock_height%}
-                        <span title="Service Node unlock in progress (unlocks at block {{sn.requested_unlock_height}})">🔓</span>
+                        <span title="Unlock in progress (block {{sn.requested_unlock_height}})">🔓</span>
                         {{((sn.requested_unlock_height - info.height) * 120 + server.datetime.timestamp()) | from_timestamp | format_datetime('short')}}
-                        ({{((sn.requested_unlock_height - info.height) * 120) | reltime}})
+                        <span class="text-xs text-slate-500">({{((sn.requested_unlock_height - info.height) * 120) | reltime}})</span>
                     {%else%}
-                        Staking Infinitely
+                        <span class="text-slate-400">∞</span>
                     {%endif%}
                 </td>
             </tr>
         {%endfor%}
-        {%if limit_awaiting and (awaiting_sns | length) > limit_awaiting%}
-            <tr>
-                <td class="sn-more" colspan="7"><a href="/service_nodes#service-nodes-awaiting">+ {{(awaiting_sns | length) - limit_awaiting}} more ↪</a></td>
-            </tr>
-        {%endif%}
     </tbody>
+    {%if limit_awaiting and (awaiting_sns | length) > limit_awaiting%}
+    <tfoot>
+        <tr>
+            <td colspan="8" class="text-center py-2">
+                <a href="/service_nodes#service-nodes-awaiting" class="text-sm text-brand-600 hover:text-brand-700">+ {{(awaiting_sns | length) - limit_awaiting}} more &rarr;</a>
+            </td>
+        </tr>
+    </tfoot>
+    {%endif%}
 </table>
+</div>

@@ -1,32 +1,48 @@
-<table style="width:100%">
+<div class="table-wrap">
+<table class="data-table">
     <thead>
         <tr>
-            <td>Public Key</td>
-            <td>Contributors</td>
-            <td>Operator Fee (%)</td>
-            <td>Decommission Height</td>
-            <td>Last Uptime Proof</td>
-            <td>Blocks until Dereg.</td>
+            <th class="hidden sm:table-cell">Status</th>
+            <th>Public Key</th>
+            <th class="text-center">Contributors</th>
+            <th class="text-center">Op Fee (%)</th>
+            <th>Decomm Height</th>
+            <th>Last Uptime</th>
+            <th>Until Dereg</th>
         </tr>
     </thead>
-
     <tbody>
         {%for sn in (inactive_sns | sort(attribute='earned_downtime_blocks,state_height,last_uptime_proof,service_node_pubkey'))[:limit_inactive]%}
             <tr>
+                <td class="hidden sm:table-cell">
+                    {%if sn.decomm_blocks_remaining is defined and sn.decomm_blocks_remaining <= 0%}
+                        <span class="badge badge-danger">Critical</span>
+                    {%else%}
+                        <span class="badge badge-danger">Decomm.</span>
+                    {%endif%}
+                </td>
                 {%include 'include/sn_kcf.html'%}
                 <td>{{sn.state_height}}</td>
                 <td>{{sn.last_uptime_proof | from_timestamp | ago if sn.last_uptime_proof > 0 else "Not Received"}}</td>
-                <td>{%if sn.decomm_blocks_remaining > 0%}{{sn.decomm_blocks_remaining}} ({{(sn.decomm_blocks_remaining * 120) | reltime}})
-                        {%-else%}None (deregistration imminent!)
-                        {%-endif%}</td>
+                <td>
+                    {%if sn.decomm_blocks_remaining > 0%}
+                        {{sn.decomm_blocks_remaining}}
+                        <span class="text-xs text-slate-500">({{(sn.decomm_blocks_remaining * 120) | reltime}})</span>
+                    {%-else%}
+                        <span class="badge badge-danger">Imminent!</span>
+                    {%-endif%}
+                </td>
             </tr>
         {%endfor%}
-
-        {%if limit_inactive and inactive_sns | count > limit_inactive%}
-            <tr>
-                <td class="sn-more" colspan="6"><a href="/service_nodes#service-nodes-inactive">+ {{inactive_sns | count - limit_inactive}} more ↪</a></td>
-            </tr>
-        {%endif%}
     </tbody>
+    {%if limit_inactive and inactive_sns | count > limit_inactive%}
+    <tfoot>
+        <tr>
+            <td colspan="7" class="text-center py-2">
+                <a href="/service_nodes#service-nodes-inactive" class="text-sm text-brand-600 hover:text-brand-700">+ {{inactive_sns | count - limit_inactive}} more &rarr;</a>
+            </td>
+        </tr>
+    </tfoot>
+    {%endif%}
 </table>
-
+</div>
