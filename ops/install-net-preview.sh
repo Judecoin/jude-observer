@@ -43,6 +43,7 @@ Type=simple
 User=root
 WorkingDirectory=/opt/jude-explorer-preview
 Environment=MOCK_MODE=0
+Environment=HOME=/opt/jude-explorer-preview
 ExecStart=/opt/jude-explorer/.venv/bin/gunicorn -w 1 -b 127.0.0.1:5001 mainnet:app
 Restart=on-failure
 RestartSec=5
@@ -59,5 +60,16 @@ WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
 systemctl start jude-explorer-preview.service
-curl --fail --silent --show-error --max-time 20 http://127.0.0.1:5001/ -o /dev/null
+ready=false
+for attempt in {1..15}; do
+  if curl --fail --silent --max-time 10 http://127.0.0.1:5001/ -o /dev/null; then
+    ready=true
+    break
+  fi
+  sleep 1
+done
+if [[ $ready != true ]]; then
+  systemctl status jude-explorer-preview.service --no-pager --lines=15
+  exit 1
+fi
 echo 'Preview responds on loopback port 5001. Production service and nginx were not modified.'
