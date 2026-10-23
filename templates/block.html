@@ -107,7 +107,7 @@
     {%if miner_tx%}
     <div class="card overflow-hidden mb-4">
         <div class="px-4 py-3 border-b border-slate-200">
-            <h2 class="text-sm font-semibold text-slate-700">Miner Reward Transaction</h2>
+            <h2 class="text-sm font-semibold text-slate-700">{{ 'Block Reward Transaction' if block_header.major_version >= 17 else 'Miner Reward Transaction' }}</h2>
         </div>
         <div class="table-wrap">
             <table class="data-table">

@@ -1,4 +1,24 @@
-# Oxen Observer OMG block explorer
+# Jude .net explorer
+
+This repository's root contains the Flask explorer for judeblock.net. The
+`explorer-iii/` directory is a separate explorer and is outside this upgrade.
+
+The explorer reads chain data from the locally configured Judecoin node using
+LMQ RPC. Real RPC is the default: an unavailable node causes an error instead
+of quietly displaying invented chain data. For local UI development only, set
+`MOCK_MODE=1`; all mock heights, balances, nodes, and transactions are fictitious.
+
+Current v17 and newer network summaries display PoS / Pulse consensus instead
+of PoW difficulty or hash rate. Historic pre-v17 blocks retain their original
+fields. Always verify the actual node hard fork, tip height, tip hash, mempool,
+and several recent block pages against an independent chain source before a
+production release. Review the preview first; do not treat mock UI as a live
+chain synchronization check.
+
+Run focused tests with `MOCK_MODE=1 python -m unittest discover -s tests`.
+
+The deployment instructions below are historical; confirm paths, process
+manager, and socket permissions against the actual server before using them.
 
 Block explorer using Oxen 8+ LMQ RPC interface that does everything through RPC requests.  Sexy,
 awesome, safe.

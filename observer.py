@@ -750,6 +750,7 @@ def show_sn(pubkey, more_details=False):
 def statistics_page():
     omq, oxend = omq_connection()
     inforeq = FutureJSON(omq, oxend, 'rpc.get_info', 1)
+    hfinfo = FutureJSON(omq, oxend, 'rpc.hard_fork_info', 10)
     stake = FutureJSON(omq, oxend, 'rpc.get_staking_requirement', 10)
     sns = get_sns_future(omq, oxend)
     coinbase = FutureJSON(omq, oxend, 'admin.get_coinbase_tx_sum', 10, timeout=1, fail_okay=True,
@@ -791,6 +792,7 @@ def statistics_page():
 
     return flask.render_template('statistics.html',
         info=info,
+        hf=hfinfo.get(),
         stake=staking_req,
         active_count=len(active_sns),
         inactive_count=len(inactive_sns),

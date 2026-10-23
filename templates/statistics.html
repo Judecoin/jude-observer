@@ -65,6 +65,7 @@
         <div class="stat-label">Block Height</div>
         <div class="stat-value">{{ "{:,}".format(info.height) }}</div>
       </div>
+      {% if hf.version < 17 %}
       <div class="stat-item">
         <div class="stat-label">Hash Rate</div>
         <div class="stat-value">~{{ hash_rate | si }}H/s</div>
@@ -73,6 +74,12 @@
         <div class="stat-label">Difficulty</div>
         <div class="stat-value">{{ info.difficulty | si }}</div>
       </div>
+      {% else %}
+      <div class="stat-item">
+        <div class="stat-label">Consensus</div>
+        <div class="stat-value">Proof of Stake (Pulse)</div>
+      </div>
+      {% endif %}
       <div class="stat-item">
         <div class="stat-label">Block Target</div>
         <div class="stat-value">{{ info.target }}s</div>

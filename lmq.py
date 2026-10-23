@@ -4,7 +4,7 @@ import sys
 import os
 from datetime import datetime, timedelta
 
-MOCK_MODE = os.environ.get('MOCK_MODE', '1') == '1'
+MOCK_MODE = os.environ.get('MOCK_MODE', '0') == '1'
 
 if MOCK_MODE:
     from mock_data import MOCK_RESPONSES

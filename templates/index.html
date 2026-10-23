@@ -35,6 +35,7 @@
                 <div class="stat-label">Hard Fork</div>
                 <div class="stat-value">v{{hf.version}}{%if 'revision' in hf%}.{{hf.revision}}{%endif%}</div>
             </div>
+            {% if hf.version < 17 %}
             <div class="stat-item">
                 <div class="stat-label">Difficulty</div>
                 <div class="stat-value">{{info.difficulty}}</div>
@@ -43,6 +44,12 @@
                 <div class="stat-label">Hash Rate</div>
                 <div class="stat-value">~{{(info.difficulty / info.target) | si }}H/s</div>
             </div>
+            {% else %}
+            <div class="stat-item">
+                <div class="stat-label">Consensus</div>
+                <div class="stat-value">Proof of Stake (Pulse)</div>
+            </div>
+            {% endif %}
             <div class="stat-item">
                 <div class="stat-label">Staking Req.</div>
                 <div class="stat-value">{{stake.staking_requirement | cash}}</div>
