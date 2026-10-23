@@ -136,7 +136,6 @@
             <th class="hidden sm:table-cell">Unlock Height</th>
             <th>Blocks Left</th>
             <th>ETA</th>
-            <th class="hidden md:table-cell">Progress</th>
           </tr>
         </thead>
         <tbody>
@@ -151,17 +150,6 @@
               </span>
             </td>
             <td class="text-slate-600">{{ node.eta_seconds | reltime(two_part=True, in_ago=False) }}</td>
-            <td class="hidden md:table-cell">
-              {% set unlock_period = 10800 %}
-              {% set elapsed = unlock_period - node.blocks_remaining %}
-              {% set pct = [([elapsed / unlock_period * 100, 0] | max), 100] | min %}
-              <div class="flex items-center gap-2">
-                <div class="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
-                  <div class="h-full rounded-full {% if pct > 80 %}bg-emerald-500{% elif pct > 40 %}bg-amber-500{% else %}bg-brand-500{% endif %}" style="width: {{ "%.0f" | format(pct) }}%"></div>
-                </div>
-                <span class="text-xs text-slate-400 w-8 text-right">{{ "%.0f" | format(pct) }}%</span>
-              </div>
-            </td>
           </tr>
           {% endfor %}
         </tbody>
