@@ -10,6 +10,7 @@
             <th>Open</th>
             <th>Min. Contribution</th>
             <th>Expiry (EST)</th>
+            <th class="text-center">VERSION</th>
         </tr>
     </thead>
     <tbody>
@@ -37,13 +38,14 @@
                         <span class="text-slate-400">∞</span>
                     {%endif%}
                 </td>
+                <td class="text-center whitespace-nowrap">{{ sn.service_node_version | join('.') if sn.service_node_version is defined and sn.service_node_version else '—' }}</td>
             </tr>
         {%endfor%}
     </tbody>
     {%if limit_awaiting and (awaiting_sns | length) > limit_awaiting%}
     <tfoot>
         <tr>
-            <td colspan="8" class="text-center py-2">
+            <td colspan="9" class="text-center py-2">
                 <a href="/service_nodes#service-nodes-awaiting" class="text-sm text-brand-600 hover:text-brand-700">+ {{(awaiting_sns | length) - limit_awaiting}} more &rarr;</a>
             </td>
         </tr>

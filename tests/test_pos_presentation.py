@@ -37,6 +37,18 @@ class PosPresentationTests(unittest.TestCase):
         with patch.dict(mock_data.MOCK_RESPONSES, {'rpc.hard_fork_info': lambda: {'version': 15, 'revision': 0}}):
             self.assertIn('Hash Rate', self.client.get('/').get_data(as_text=True))
 
+    def test_node_tables_show_versions_reported_by_rpc(self):
+        def nodes():
+            states = mock_data.get_service_nodes()['service_node_states']
+            states[0]['service_node_version'] = [4, 0, 0]
+            return {'service_node_states': states}
+
+        with patch.dict(mock_data.MOCK_RESPONSES, {'rpc.get_service_nodes': nodes}):
+            html = self.client.get('/service_nodes').get_data(as_text=True)
+            self.assertIn('VERSION', html)
+            self.assertIn('4.0.0', html)
+            self.assertIn('3.2.0', html)
+
     def test_pos_reward_uses_block_reward_name(self):
         with app.test_request_context('/block/1'):
             from flask import render_template

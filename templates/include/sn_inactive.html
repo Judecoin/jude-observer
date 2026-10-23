@@ -9,6 +9,7 @@
             <th>Decomm Height</th>
             <th>Last Uptime</th>
             <th>Until Dereg</th>
+            <th class="text-center">VERSION</th>
         </tr>
     </thead>
     <tbody>
@@ -32,13 +33,14 @@
                         <span class="badge badge-danger">Imminent!</span>
                     {%-endif%}
                 </td>
+                <td class="text-center whitespace-nowrap">{{ sn.service_node_version | join('.') if sn.service_node_version is defined and sn.service_node_version else '—' }}</td>
             </tr>
         {%endfor%}
     </tbody>
     {%if limit_inactive and inactive_sns | count > limit_inactive%}
     <tfoot>
         <tr>
-            <td colspan="7" class="text-center py-2">
+            <td colspan="8" class="text-center py-2">
                 <a href="/service_nodes#service-nodes-inactive" class="text-sm text-brand-600 hover:text-brand-700">+ {{inactive_sns | count - limit_inactive}} more &rarr;</a>
             </td>
         </tr>
