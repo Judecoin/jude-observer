@@ -1,55 +1,52 @@
-{# Lists mempool transactions. mempool_limit can be set to limit the number of shown transactions; defaults to 25. Set explicitly to none to show all. #}
+{# Lists mempool transactions.  mempool_limit can be set to limit the number of shown transactions; defaults to 25.  Set explicitly to none to show all. #}
 {% if not mempool_limit is defined %}{% set mempool_limit = 25 %}
-{% elif mempool_limit is none %}{% set mempool_limit = mempool.txs|length %}
+{% elif mempool_limit is none %}{% set mempool_limit = mempool.transactions|length %}
 {% endif %}
-<div class="section py-4">
-    <div class="card overflow-hidden">
-        <div class="px-4 py-3 border-b border-slate-200">
-            <h2 class="text-base font-semibold text-slate-900">Transaction Pool</h2>
-            <p class="text-xs text-slate-500 mt-0.5">{{mempool.txs|length}} transactions, {{mempool.txs|sum(attribute='size') | si}}B</p>
-        </div>
+<div class="Wrapper">
+    <h2 style="margin-bottom: 0px"> Transaction Pool</h2>
 
-        <div class="table-wrap">
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th title="How long ago the transaction was received by this node">Age</th>
-                        <th>Type</th>
-                        <th>Transaction Hash</th>
-                        <th class="hidden sm:table-cell">Fee / Per kB</th>
-                        <th class="hidden md:table-cell">In/Out</th>
-                        <th class="hidden sm:table-cell">TX Size</th>
-                    </tr>
-                </thead>
-                <tbody>
-                {% import 'include/tx_type_symbol.html' as symbol %}
-                {% import 'include/tx_fee.html' as fee %}
-                {% for tx in mempool.txs[:mempool_limit] %}
-                    <tr>
-                        <td class="text-slate-500" title="{{tx.received_timestamp | from_timestamp | format_datetime}}">{{tx.received_timestamp | from_timestamp | ago}}</td>
-                        <td>{{symbol.display(tx)}}</td>
-                        <td class="font-mono text-xs"><a href="/tx/{{tx.tx_hash}}">{{tx.tx_hash}}</a></td>
-                        <td class="hidden sm:table-cell">
-                            {%if 'rct_signatures' in tx%}
-                                {{fee.display(tx)}} / {{(tx.rct_signatures.txnFee * 1000 / tx.size) | cash(tag=false, decimals=4)}}
-                            {%else%}
-                                N/A
-                            {%endif%}
-                        </td>
-                        <td class="hidden md:table-cell">{{tx.vin | length}}/{{tx.vout | length}}</td>
-                        <td class="hidden sm:table-cell">{{tx.size | si}}B</td>
-                    </tr>
-                {% endfor %}
-                </tbody>
-            </table>
-        </div>
+    <h4 class="Subtitle">{{mempool.transactions|length}} transactions,
+        {{mempool.transactions|sum(attribute='blob_size') | si}}B</h4>
+    <div class="TitleUnderliner"></div>
 
-        {% if mempool.txs|length > mempool_limit %}
-        <div class="px-4 py-2 border-t border-slate-100 text-center">
-            <a href="/txpool" class="text-sm text-brand-600 hover:text-brand-700">
-                Showing {{mempool_limit}}/{{mempool.txs | length}} — View all &rarr;
-            </a>
+    <table style="width:100%">
+        <thead>
+            <tr>
+                <td title="How long ago the transaction was received by this node">Age [h:m:s]</td>
+                <td>Type</td>
+                <td>Transaction Hash</td>
+                <td>Fee/Per kB</td>
+                <td>In/Out</td>
+                <td>TX Size</td>
+            </tr>
+        </thead>
+        <tbody>
+        {% import 'include/tx_type_symbol.html' as symbol %}
+        {% import 'include/tx_fee.html' as fee %}
+        {% for tx in mempool.transactions[:mempool_limit] %}
+            <tr>
+                <td title="{{tx.receive_time | from_timestamp | format_datetime}}">{{tx.receive_time | from_timestamp | ago}}</td>
+                <td>{{symbol.display(tx)}}</td>
+                <td><a href="/tx/{{tx.id_hash}}">{{tx.id_hash}}</a></td>
+                <td>
+                    {%if 'rct_signatures' in tx.info%}
+                        {{fee.display(tx)}} / {{(tx.info.rct_signatures.txnFee * 1000 / tx.blob_size) | jude(tag=false, decimals=4)}}
+                    {%else%}
+                        N/A
+                    {%endif%}
+                </td>
+                <td>{{tx.info.vin | length}}/{{tx.info.vout | length}}</td>
+                <td>{{tx.blob_size | si}}B</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+
+    {% if mempool.transactions|length > mempool_limit %}
+        <div class="center" style="text-align: center; margin-bottom: 10px">
+            <a href="/txpool">Only {{mempool_limit}}/{{mempool.transactions | length}} transactions shown. Click here to see all of them</a>
         </div>
-        {% endif %}
-    </div>
-</div>
+    {% endif %}
+
+</div> <!-- Wrapper -->
+

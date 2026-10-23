@@ -1,12 +1,12 @@
 {% macro display(tx, show_zero=false) -%}
     {% set fee =
-        (tx.rct_signatures.txnFee if 'rct_signatures' in tx and 'txnFee' in tx.rct_signatures else 0)
+        (tx.info.rct_signatures.txnFee if 'rct_signatures' in tx.info and 'txnFee' in tx.info.rct_signatures else 0)
     -%}
     {% if fee > 0 or show_zero -%}
-        {{ fee | cash(tag=False, fixed=True, decimals=4) }}
+        {{ fee | jude(tag=False, fixed=True, decimals=4) }}
         {%- if 'burn_amount' in tx.extra %}
-        <span class="icon" title="= {{(fee - tx.extra.burn_amount) | cash(tag_name='JUDE')}} TX fee
-+ {{tx.extra.burn_amount | cash(tag_name='JUDE')}} burned">🔥</span>
+        <span class="icon" title="= {{(fee - tx.extra.burn_amount) | jude}} TX fee
++ {{tx.extra.burn_amount | jude}} burned">🔥</span>
         {%-endif-%}
     {%endif-%}
 {% endmacro %}
