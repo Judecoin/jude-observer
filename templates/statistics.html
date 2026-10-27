@@ -17,28 +17,33 @@
 
   {# --- Node Overview Cards --- #}
   <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 mb-6">
-    <div class="card p-4">
-      <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">Active Nodes</div>
+    <div class="card p-4 min-h-[9rem]">
+      <div class="text-xs font-medium text-slate-500 uppercase tracking-wider min-h-[3.25rem]">Active Nodes</div>
       <div class="text-2xl font-bold text-emerald-600 mt-1">{{ active_count }}</div>
       <div class="text-xs text-slate-400 mt-0.5">{{ active_swarms }} swarms</div>
     </div>
-    <div class="card p-4">
-      <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">Decommissioned</div>
+    <div class="card p-4 min-h-[9rem]">
+      <div class="text-xs font-medium text-slate-500 uppercase tracking-wider min-h-[3.25rem]">Decommissioned</div>
       <div class="text-2xl font-bold text-amber-600 mt-1">{{ inactive_count }}</div>
       <div class="text-xs text-slate-400 mt-0.5">temporarily offline</div>
     </div>
-    <div class="card p-4">
-      <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">Awaiting</div>
+    <div class="card p-4 min-h-[9rem]">
+      <div class="text-xs font-medium text-slate-500 uppercase tracking-wider min-h-[3.25rem]">Awaiting</div>
       <div class="text-2xl font-bold text-blue-600 mt-1">{{ awaiting_count }}</div>
       <div class="text-xs text-slate-400 mt-0.5">need contributions</div>
     </div>
-    <div class="card p-4">
-      <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">Total Staked</div>
+    <div class="card p-4 min-h-[9rem]">
+      <div class="text-xs font-medium text-slate-500 uppercase tracking-wider min-h-[3.25rem]">Deregistered · Stake locked</div>
+      <div class="text-2xl font-bold text-rose-600 mt-1">{{ deregistered_count if deregistered_count is not none else 'Syncing' }}</div>
+      <div class="text-xs text-slate-400 mt-0.5">current chain lock set</div>
+    </div>
+    <div class="card p-4 min-h-[9rem]">
+      <div class="text-xs font-medium text-slate-500 uppercase tracking-wider min-h-[3.25rem]">Total Staked</div>
       <div class="text-2xl font-bold text-emerald-600 mt-1">{{ total_staked | cash(tag=False, decimals=0) }}</div>
       <div class="text-xs text-slate-400 mt-0.5">JUDE contributed to service nodes</div>
     </div>
-    <div class="card p-4">
-      <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">Staking Req.</div>
+    <div class="card p-4 min-h-[9rem]">
+      <div class="text-xs font-medium text-slate-500 uppercase tracking-wider min-h-[3.25rem]">Staking Req.</div>
       <div class="text-2xl font-bold text-slate-700 mt-1">{{ stake.staking_requirement | cash(tag=False, decimals=0) }}</div>
       <div class="text-xs text-slate-400 mt-0.5">JUDE per node</div>
     </div>
@@ -168,10 +173,10 @@ document.addEventListener('DOMContentLoaded', function() {
   new Chart(document.getElementById('nodeStatusChart'), {
     type: 'doughnut',
     data: {
-      labels: ['Active', 'Decommissioned', 'Awaiting'],
+      labels: ['Active', 'Decommissioned', 'Awaiting'{% if deregistered_count is not none %}, 'Deregistered · Stake locked'{% endif %}],
       datasets: [{
-        data: [{{ active_count }}, {{ inactive_count }}, {{ awaiting_count }}],
-        backgroundColor: ['#059669', '#d97706', '#3b82f6'],
+        data: [{{ active_count }}, {{ inactive_count }}, {{ awaiting_count }}{% if deregistered_count is not none %}, {{ deregistered_count }}{% endif %}],
+        backgroundColor: ['#059669', '#d97706', '#3b82f6'{% if deregistered_count is not none %}, '#e11d48'{% endif %}],
         borderWidth: 0,
         hoverOffset: 6,
       }]

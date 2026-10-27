@@ -32,6 +32,7 @@ except ImportError:
 import config
 import local_config
 from lmq import FutureJSON, omq_connection, MOCK_MODE
+from deregistered_nodes import current_locked_count
 import os
 
 # Make a dict of config.* to pass to templating
@@ -424,6 +425,7 @@ def main(refresh=None, page=0, per_page=None, first=None, last=None, style=None)
             checkpoints=checkpoints.get(),
             refresh=refresh,
             sync_warning=sync_warning,
+            deregistered_count=current_locked_count(omq, oxend, height),
             )
 
 
@@ -447,6 +449,7 @@ def sns():
 
     return flask.render_template('service_nodes.html',
         info=info_data,
+        deregistered_count=current_locked_count(omq, oxend, info_data['height']),
         active_sns=active,
         active_swarms=len(set(x['swarm_id'] for x in active)),
         awaiting_sns=awaiting,
@@ -705,6 +708,7 @@ def statistics_page():
 
     return flask.render_template('statistics.html',
         info=info,
+        deregistered_count=current_locked_count(omq, oxend, height),
         hf=hfinfo.get(),
         stake=staking_req,
         active_count=len(active_sns),

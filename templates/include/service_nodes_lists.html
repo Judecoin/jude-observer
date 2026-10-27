@@ -1,21 +1,25 @@
 <div class="section py-4">
     {# --- SN Summary Cards --- #}
     <div class="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-4">
-        <div class="card p-3 text-center">
-            <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">Total</div>
+        <div class="card p-3 text-center min-h-[7.75rem]">
+            <div class="text-xs font-medium text-slate-500 uppercase tracking-wider min-h-[3.25rem]">Total</div>
             <div class="text-xl font-bold text-slate-900 mt-1">{{(awaiting_sns | count) + (inactive_sns | count) + (active_sns | count)}}</div>
         </div>
-        <div class="card p-3 text-center" style="border-left: 3px solid #059669;">
-            <div class="text-xs font-medium text-emerald-600 uppercase tracking-wider">Active</div>
+        <div class="card p-3 text-center min-h-[7.75rem]" style="border-left: 3px solid #059669;">
+            <div class="text-xs font-medium text-emerald-600 uppercase tracking-wider min-h-[3.25rem]">Active</div>
             <div class="text-xl font-bold text-emerald-600 mt-1">{{active_sns | count}}</div>
         </div>
-        <div class="card p-3 text-center" style="border-left: 3px solid #3b82f6;">
-            <div class="text-xs font-medium text-blue-600 uppercase tracking-wider">Awaiting</div>
+        <div class="card p-3 text-center min-h-[7.75rem]" style="border-left: 3px solid #3b82f6;">
+            <div class="text-xs font-medium text-blue-600 uppercase tracking-wider min-h-[3.25rem]">Awaiting</div>
             <div class="text-xl font-bold text-blue-600 mt-1">{{awaiting_sns | count}}</div>
         </div>
-        <div class="card p-3 text-center" style="border-left: 3px solid #d97706;">
-            <div class="text-xs font-medium text-amber-600 uppercase tracking-wider">Decomm</div>
+        <div class="card p-3 text-center min-h-[7.75rem]" style="border-left: 3px solid #d97706;">
+            <div class="text-xs font-medium text-amber-600 uppercase tracking-wider min-h-[3.25rem]">Decomm</div>
             <div class="text-xl font-bold text-amber-600 mt-1">{{inactive_sns | count}}</div>
+        </div>
+        <div class="card p-3 text-center min-h-[7.75rem]" style="border-left: 3px solid #e11d48;">
+            <div class="text-xs font-medium text-rose-600 uppercase tracking-wider min-h-[3.25rem]">Deregistered · Stake locked</div>
+            <div class="text-xl font-bold text-rose-600 mt-1">{{ deregistered_count if deregistered_count is not none else 'Syncing' }}</div>
         </div>
     </div>
 
