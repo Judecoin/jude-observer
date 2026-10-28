@@ -10,7 +10,7 @@ import string
 import time
 import base64
 from decimal import Decimal
-from base64 import b32encode, b16decode
+from base64 import b32encode
 from werkzeug.routing import BaseConverter
 from pygments import highlight
 from pygments.lexers import JsonLexer
@@ -162,14 +162,6 @@ def format_jude(atomic, tag_name='JUDE', tag=True, fixed=False, decimals=9, zero
 @app.template_filter('bytes_to_hex')
 def bytes_to_hex(b):
     return "".join("{:02x}".format(x) for x in b)
-
-@app.template_filter('base32z')
-def base32z(hex):
-    return b32encode(b16decode(hex, casefold=True)).translate(
-            bytes.maketrans(
-                b'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567',
-                b'ybndrfg8ejkmcpqxot1uwisza345h769')).decode().rstrip('=')
-
 
 @app.template_filter('ellipsize')
 def ellipsize(string, leading=10, trailing=5, ellipsis='...'):
